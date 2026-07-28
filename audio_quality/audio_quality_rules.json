@@ -1,0 +1,41 @@
+{
+  "trigger": "#听音检测",
+  "trigger_aliases": ["#听音检测", "#听音质检", "#录音质检"],
+  "qualified_score": 80,
+  "speaker_review_threshold": 0.72,
+  "employee_speaker_keywords": ["中国移动", "10086", "工号", "您好", "您是机主本人吗", "机主本人", "后四位", "咨询套餐", "我帮您查询", "帮您查一下", "为了更好地帮您", "请稍等", "给您推荐", "这边给您", "建议您", "办理", "方案"],
+  "service_opening_keywords": ["中国移动", "10086", "工号", "您好", "您是机主本人吗", "机主本人", "后四位", "咨询套餐", "我帮您查询", "帮您查一下", "为了更好地帮您", "请稍等", "给您推荐", "这边给您"],
+  "dimensions": {
+    "挽留流程": {"weight": 0.45, "base_score": 100, "rule_ids": ["missing_ask", "missing_check", "missing_calculate", "missing_compare", "missing_retention_action"]},
+    "服务规范": {"weight": 0.30, "base_score": 100, "rule_ids": ["rude_phrase", "commanding_tone", "impatient_phrase", "push_to_hall_without_retention"]},
+    "表达清晰": {"weight": 0.15, "base_score": 95, "rule_ids": ["vague_expression", "unclear_result"]},
+    "风险控制": {"weight": 0.10, "base_score": 95, "rule_ids": ["promise_without_basis", "forbidden_no_authority"]}
+  },
+  "required_actions": [
+    {"id": "missing_ask", "label": "问情况", "patterns": ["出差", "本地", "套餐的问题", "什么原因", "主要是", "流量不够", "费用高", "宽带", "信号", "家里人", "其他移动卡"], "description": "未明显询问客户降档、销户或变更套餐的根因和使用场景", "deduction": 10},
+    {"id": "missing_check", "label": "查情况", "patterns": ["查询", "查一下", "套餐情况", "消费情况", "流量使用", "语音使用", "合约", "低消", "宽带", "增值业务"], "description": "未明显为客户查询套餐、用量、合约或业务限制", "deduction": 10},
+    {"id": "missing_calculate", "label": "算套餐", "patterns": ["折后", "每月", "合计", "总共", "差额", "优惠", "低消", "到期", "生效", "费用", "资费"], "description": "未明显计算或说明套餐费用、折扣、生效时间、合约/低消影响", "deduction": 8},
+    {"id": "missing_compare", "label": "比方案", "patterns": ["相比", "比", "原套餐", "现套餐", "现在套餐", "新套餐", "流量", "分钟", "宽带", "不够用", "超套"], "description": "未明显对比原套餐与推荐方案的差异", "deduction": 8},
+    {"id": "missing_retention_action", "label": "挽留动作", "patterns": ["推荐", "建议", "可以办理", "给您办理", "保留", "优惠", "方案", "帮您反馈", "工作人员联系", "优享厅", "营业厅", "考虑一下"], "description": "未明显开展挽留动作或给出可执行处理方案", "deduction": 15}
+  ],
+  "phrase_rules": [
+    {"id": "rude_phrase", "enabled": true, "pattern": "你自己|不是跟你说了|听不懂|不归我管|随便你|爱怎么|投诉也没用", "regex": true, "description": "疑似不礼貌或推诿表达", "deduction": 20},
+    {"id": "commanding_tone", "enabled": true, "pattern": "你必须|你赶紧|你快点|别再|你只能", "regex": true, "description": "疑似命令式语气", "deduction": 12},
+    {"id": "impatient_phrase", "enabled": true, "pattern": "我不知道|没办法|你等着吧|就这样|我处理不了", "regex": true, "description": "疑似消极或不耐烦表达", "deduction": 10},
+    {"id": "forbidden_no_authority", "enabled": true, "pattern": "我没有权限|我这边取消不了|不是我办的|你打10086|你去营业厅问", "regex": true, "description": "疑似直接以无权限、转渠道等方式推脱，需确认是否有后续反馈或挽留动作", "deduction": 15},
+    {"id": "push_to_hall_without_retention", "enabled": true, "pattern": "直接去营业厅|自己去营业厅|只能去营业厅", "regex": true, "description": "疑似未充分挽留即引导线下办理", "deduction": 15},
+    {"id": "promise_without_basis", "enabled": true, "pattern": "肯定可以|一定能办|绝对没问题|保证给你", "regex": true, "description": "疑似无依据承诺，存在投诉风险", "deduction": 12},
+    {"id": "vague_expression", "enabled": true, "pattern": "可能吧|差不多|应该是|不知道什么时候|大概", "regex": true, "description": "表达不够明确，可能影响客户理解", "deduction": 8},
+    {"id": "unclear_result", "enabled": true, "pattern": "先这样|后面再说|到时候看|再处理吧", "regex": true, "description": "处理结果或后续动作不清晰", "deduction": 8}
+  ],
+  "asr_quality": {
+    "enabled": true,
+    "min_total_characters": 80,
+    "min_segment_count": 4,
+    "min_distinct_speakers": 2,
+    "max_unknown_speaker_ratio": 0.40,
+    "unknown_speakers": ["", "??", "ASR", "UNKNOWN", "unknown"],
+    "uncertain_patterns": ["听不清", "无法识别", "不清楚", "\\[inaudible\\]", "\\[unk\\]", "<unk>", "字幕", "转写失败"],
+    "key_business_terms": ["套餐", "资费", "费用", "流量", "分钟", "宽带", "优惠", "办理", "生效", "降档", "销户", "挽留"]
+  }
+}

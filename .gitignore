@@ -1,0 +1,47 @@
+# Secrets and machine-local configuration
+.env
+*.env
+!*.env.example
+config.json
+audio_quality_config.json
+yuanbao_members.json
+
+# Runtime state and user data
+state/
+inbox/
+archive/
+failed/
+reports/
+transcripts/
+audio-inbox/
+audio_quality_output/
+communication/output/
+communication/archive/
+communication/failed/
+
+# Audio, spreadsheets, and generated analysis copies
+*.m4a
+*.mp3
+*.wav
+*.aac
+*.amr
+*.ogg
+*.flac
+*.xlsx
+!*.example.xlsx
+_analysis/
+_restore_zip/
+patch-backups/
+
+# Python/runtime caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+audio_quality_runtime/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+desktop.ini

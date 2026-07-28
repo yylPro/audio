@@ -1,0 +1,129 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import sys
+import uuid
+from pathlib import Path
+from typing import Any
+
+from .audio_quality_processor import (
+    AudioQualityError,
+    AudioSubmission,
+    IncomingAudioMessage,
+    attach_archived_file,
+    extract_accepted_number,
+    format_received_reply,
+    init_db,
+    load_json,
+    reserve_task,
+    sha256_file,
+    validate_attachment,
+)
+from .text_compat import repair_multiline_text, repair_text
+
+
+def _normalize(value: Any) -> str:
+    return repair_text(value)
+
+
+def _validate_event(event: dict[str, Any], config: dict[str, Any]) -> tuple[Path, str]:
+    if not config.get("enabled", False):
+        raise AudioQualityError("听音质检功能未启用")
+    group_id = _normalize(event.get("group_id"))
+    allowed = {_normalize(item) for item in config.get("allowed_group_ids", []) if _normalize(item)}
+    if allowed and group_id not in allowed:
+        raise AudioQualityError("当前群未启用听音质检")
+    text = repair_multiline_text(event.get("text"))
+    triggers = [_normalize(item) for item in config.get("trigger_aliases", []) if _normalize(item)]
+    if not any(trigger in text for trigger in triggers):
+        raise AudioQualityError("消息缺少听音检测触发词")
+    known = {item for item in ("#沟通记录", "#听音检测", "#听音质检", "#录音质检", "#工单催办") if item in text}
+    if known - set(triggers):
+        raise AudioQualityError("一条消息只能执行一个功能，请只保留一个触发词")
+    if config.get("require_structured_at", True) and not bool(event.get("is_at_bot")):
+        raise AudioQualityError("请使用元宝派原生 AT Bot 后再发送 #听音检测")
+    media_paths = event.get("media_paths")
+    if not isinstance(media_paths, list):
+        raise AudioQualityError("消息附件字段格式不合法")
+    maximum = max(1, int(config.get("max_attachments", 1)))
+    if len(media_paths) != 1 or len(media_paths) > maximum:
+        raise AudioQualityError("每条听音检测消息必须且只能包含一个音频附件")
+    source = Path(repair_text(media_paths[0]))
+    if not source.is_file():
+        raise AudioQualityError("元宝派临时音频不存在或已被清理")
+    message_id = _normalize(event.get("message_id"))
+    if not message_id:
+        raise AudioQualityError("消息ID为空，无法进行幂等处理")
+    return source, message_id
+
+
+def _archive_audio(source: Path, digest: str, inbox: Path) -> Path:
+    destination_dir = inbox / digest
+    destination = destination_dir / source.name
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    if destination.is_file():
+        if sha256_file(destination) != digest:
+            raise AudioQualityError("归档路径已存在但文件哈希不一致")
+        return destination
+    temporary = destination_dir / f".{source.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        shutil.copyfile(source, temporary)
+        if sha256_file(temporary) != digest:
+            raise AudioQualityError("附件复制后哈希校验失败")
+        os.replace(temporary, destination)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return destination
+
+
+def ingest_event(event: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    source, message_id = _validate_event(event, config)
+    digest = sha256_file(source)
+    archived = _archive_audio(source, digest, Path(config["audio_inbox"]))
+    message = IncomingAudioMessage(
+        message_id=message_id,
+        group_id=_normalize(event.get("group_id")),
+        sender_user_id=_normalize(event.get("sender_user_id")),
+        sender_name=repair_text(event.get("sender_name")),
+        text=repair_multiline_text(event.get("text")),
+        attachment_id=digest,
+        filename=source.name,
+        file_size=archived.stat().st_size,
+        attachment_hash=digest,
+    )
+    validate_attachment(message, {
+        "supported_audio_suffixes": config.get("supported_audio_suffixes", [".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".amr"]),
+        "max_file_size_bytes": config.get("max_file_size_bytes", 200 * 1024 * 1024),
+    })
+    submission = AudioSubmission("", None, extract_accepted_number(message.text, message.filename))
+    connection = init_db(Path(config["database_path"]))
+    try:
+        task_id, created = reserve_task(connection, message, submission)
+        attach_archived_file(connection, task_id, archived)
+    finally:
+        connection.close()
+    reply = format_received_reply(task_id) if created else f"【听音质检】\n该音频已接收，无需重复提交。任务编号：{task_id}。"
+    return {"handled": True, "ok": True, "created": created, "task_id": task_id, "reply": reply}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Deterministic Yuanbao audio-quality ingress adapter.")
+    parser.add_argument("--config", required=True, type=Path)
+    args = parser.parse_args()
+    try:
+        event = json.load(sys.stdin)
+        if not isinstance(event, dict):
+            raise AudioQualityError("入站事件必须是 JSON 对象")
+        result = ingest_event(event, load_json(args.config))
+    except Exception as exc:
+        result = {"handled": True, "ok": False, "reply": f"【听音质检】接收失败：{exc}"}
+    print(json.dumps(result, ensure_ascii=False))
+    return 0 if result.get("ok") else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

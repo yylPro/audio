@@ -1,0 +1,70 @@
+{
+  "enabled": true,
+  "allowed_group_ids": ["YOUR_GROUP_ID"],
+  "trigger_aliases": ["#听音检测", "#听音质检", "#录音质检"],
+  "require_structured_at": true,
+  "max_attachments": 1,
+  "supported_audio_suffixes": [".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".amr"],
+  "max_file_size_bytes": 209715200,
+  "database_path": "D:\\path\\to\\project\\state\\assistant_v2.sqlite3",
+  "audio_inbox": "D:\\path\\to\\project\\audio-inbox\\tasks",
+  "output_root": "D:\\path\\to\\project\\audio_quality_output",
+  "quality_rules_path": "D:\\path\\to\\project\\audio_quality\\audio_quality_rules.json",
+  "env_file": "D:\\path\\to\\project\\audio_quality.env",
+  "audio_conversion": {
+    "enabled": true,
+    "target_suffix": ".wav",
+    "sample_rate": 16000,
+    "channels": "auto",
+    "convert_suffixes": [".m4a", ".aac", ".amr", ".ogg", ".flac"],
+    "ffmpeg_path": null,
+    "work_dir": "D:\\path\\to\\project\\audio_quality_runtime\\converted",
+    "fallback_to_original": false,
+    "timeout_seconds": 300
+  },
+  "asr": {
+    "provider": "aliyun_fun_asr",
+    "region": "cn-beijing",
+    "model": "fun-asr",
+    "api_key_env": "DASHSCOPE_API_KEY",
+    "submission_mode": "temporary_oss",
+    "oss_endpoint_env": "FUN_ASR_OSS_ENDPOINT",
+    "oss_bucket_env": "FUN_ASR_OSS_BUCKET",
+    "oss_access_key_id_env": "ALIBABA_CLOUD_ACCESS_KEY_ID",
+    "oss_access_key_secret_env": "ALIBABA_CLOUD_ACCESS_KEY_SECRET",
+    "oss_url_mode": "signed_https",
+    "signed_url_expires_seconds": 3600,
+    "max_attempts": 3,
+    "retry_delays_seconds": [10, 30, 90],
+    "channel_id": "auto",
+    "diarization_enabled": false,
+    "disfluency_removal_enabled": false,
+    "timestamp_alignment_enabled": true
+  },
+  "organizer": {
+    "enabled": true,
+    "provider": "deepseek",
+    "model": "deepseek-chat",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "base_url": "https://api.deepseek.com/chat/completions",
+    "timeout_seconds": 90,
+    "max_input_chars": 12000
+  },
+  "completion_notify": {
+    "enabled": false,
+    "openclaw_cmd": "D:\\OpenClaw\\openclaw.cmd",
+    "model": "deepseek/deepseek-chat",
+    "tools_allow": "session_status",
+    "agent_timeout_seconds": 120,
+    "channel": "yuanbao",
+    "account": "default",
+    "target": "group:YOUR_GROUP_ID",
+    "delay": "+5s"
+  },
+  "worker": {
+    "stale_after_seconds": 600
+  },
+  "quality": {
+    "deepseek_mode": "organize_only_then_python_score"
+  }
+}

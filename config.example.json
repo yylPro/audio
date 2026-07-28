@@ -1,0 +1,93 @@
+{
+  "features": {
+    "reminder": {
+      "name": "功能一：Excel工单催办",
+      "enabled": true,
+      "status": "ready"
+    },
+    "communication_record": {
+      "name": "功能二：沟通记录整理",
+      "enabled": false,
+      "status": "scaffolded-rules-pending",
+      "command": "#沟通记录"
+    },
+    "audio_quality": {
+      "name": "功能三：录音转写与质检",
+      "enabled": false,
+      "status": "waiting-for-asr",
+      "command": "#录音质检",
+      "asr_provider": null
+    }
+  },
+  "paths": {
+    "inbox": "D:\\代维\\工单提醒\\inbox",
+    "archive": "D:\\代维\\工单提醒\\archive",
+    "failed": "D:\\代维\\工单提醒\\failed",
+    "state_db": "D:\\代维\\工单提醒\\state\\assistant.sqlite3"
+  },
+  "excel": {
+    "sheet": null,
+    "header_row": 1,
+    "handler_columns": ["当前处理人", "受理人", "受理员工"],
+    "status_columns": ["工单状态", "当前状态"],
+    "ticket_columns": ["工单流水号", "工单编号"],
+    "acceptance_columns": ["受理号码"],
+    "due_columns": ["本环节到期时限"],
+    "workgroup_columns": ["当前处理工作组"],
+    "strict_required_columns": true,
+    "strict_empty_handler": false,
+    "strict_field_values": false,
+    "acceptance_number_pattern": "\\d{5,20}",
+    "excluded_statuses": ["已完成", "完成", "已关闭", "关闭", "已取消", "取消", "已归档", "归档"]
+  },
+  "file_modes": {
+    "detail_keywords": ["投诉", "当天到期", "今日到期"],
+    "overdue_keywords": ["过期", "超期"]
+  },
+  "input_safety": {
+    "stable_seconds": 0.5
+  },
+  "member_discovery": {
+    "enabled": true,
+    "cache_seconds": 300,
+    "keep_existing_on_empty": true
+  },
+  "message": {
+    "detail_title": "今日到期工单提醒",
+    "overdue_title": "已过期工单催办",
+    "max_people_per_message": 8,
+    "max_mentions_per_message": 8,
+    "max_characters": 1800,
+    "name_aliases": {}
+  },
+  "delivery": {
+    "enabled": false,
+    "openclaw_cmd": "D:\\OpenClaw\\openclaw.cmd",
+    "model": "deepseek/deepseek-chat",
+    "channel": "yuanbao",
+    "account": "default",
+    "target": "group:924443429",
+    "delay": "+10s",
+    "wait_timeout_seconds": 180,
+    "preflight_gateway": true,
+    "gateway_ready_timeout_seconds": 60,
+    "gateway_ready_poll_seconds": 2,
+    "gateway_ready_markers": ["Connectivity probe: ok", "Listening:"],
+    "allow_undelivered_status": false,
+    "member_mapping_file": "D:\\代维\\工单提醒\\yuanbao_members.json"
+  },
+  "communication": {
+    "enabled": false,
+    "processor": "D:\\代维\\工单提醒\\communication\\communication_processor.py",
+    "rules": "D:\\代维\\工单提醒\\communication\\communication_rules.json",
+    "prompt": "D:\\代维\\工单提醒\\communication\\prompts\\communication_record.md",
+    "model": "deepseek/deepseek-chat",
+    "history_messages": 0,
+    "business_type": "default",
+    "max_concurrency": 3,
+    "max_retries": 1,
+    "max_tokens": null,
+    "require_native_at": true,
+    "require_order_assignment_match": true
+  }
+}

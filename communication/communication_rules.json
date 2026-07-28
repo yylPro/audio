@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "status": "placeholder",
+  "trigger": "#沟通记录",
+  "minimum_content_characters": 4,
+  "order_id_pattern": "[A-Za-z0-9_-]{4,64}",
+  "allowed_contact_statuses": [],
+  "terminology": {},
+  "forbidden_phrases": [],
+  "required_information_by_status": {},
+  "notes": [
+    "业务输入格式和输出口径尚未确认，启用前必须补充真实规则。",
+    "allowed_contact_statuses 为空时，模型输出校验会明确失败。"
+  ]
+}
