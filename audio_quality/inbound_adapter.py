@@ -15,6 +15,7 @@ from .audio_quality_processor import (
     IncomingAudioMessage,
     attach_archived_file,
     extract_accepted_number,
+    extract_employee_name,
     format_received_reply,
     init_db,
     load_json,
@@ -29,7 +30,7 @@ def _normalize(value: Any) -> str:
     return repair_text(value)
 
 
-def _validate_event(event: dict[str, Any], config: dict[str, Any]) -> tuple[Path, str]:
+def _validate_event(event: dict[str, Any], config: dict[str, Any]) -> tuple[list[Path], str]:
     if not config.get("enabled", False):
         raise AudioQualityError("听音质检功能未启用")
     group_id = _normalize(event.get("group_id"))
@@ -48,16 +49,18 @@ def _validate_event(event: dict[str, Any], config: dict[str, Any]) -> tuple[Path
     media_paths = event.get("media_paths")
     if not isinstance(media_paths, list):
         raise AudioQualityError("消息附件字段格式不合法")
-    maximum = max(1, int(config.get("max_attachments", 1)))
-    if len(media_paths) != 1 or len(media_paths) > maximum:
-        raise AudioQualityError("每条听音检测消息必须且只能包含一个音频附件")
-    source = Path(repair_text(media_paths[0]))
-    if not source.is_file():
+    maximum = max(1, int(config.get("max_attachments", 10)))
+    if not media_paths:
+        raise AudioQualityError("消息缺少音频附件")
+    if len(media_paths) > maximum:
+        raise AudioQualityError(f"每条听音检测消息最多可包含 {maximum} 个音频附件")
+    sources = [Path(repair_text(item)) for item in media_paths]
+    if any(not source.is_file() for source in sources):
         raise AudioQualityError("元宝派临时音频不存在或已被清理")
     message_id = _normalize(event.get("message_id"))
     if not message_id:
         raise AudioQualityError("消息ID为空，无法进行幂等处理")
-    return source, message_id
+    return sources, message_id
 
 
 def _archive_audio(source: Path, digest: str, inbox: Path) -> Path:
@@ -81,33 +84,69 @@ def _archive_audio(source: Path, digest: str, inbox: Path) -> Path:
 
 
 def ingest_event(event: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-    source, message_id = _validate_event(event, config)
-    digest = sha256_file(source)
-    archived = _archive_audio(source, digest, Path(config["audio_inbox"]))
-    message = IncomingAudioMessage(
-        message_id=message_id,
-        group_id=_normalize(event.get("group_id")),
-        sender_user_id=_normalize(event.get("sender_user_id")),
-        sender_name=repair_text(event.get("sender_name")),
-        text=repair_multiline_text(event.get("text")),
-        attachment_id=digest,
-        filename=source.name,
-        file_size=archived.stat().st_size,
-        attachment_hash=digest,
-    )
-    validate_attachment(message, {
+    sources, message_id = _validate_event(event, config)
+    group_id = _normalize(event.get("group_id"))
+    sender_name = repair_text(event.get("sender_name"))
+    text = repair_multiline_text(event.get("text"))
+    attachment_rules = {
         "supported_audio_suffixes": config.get("supported_audio_suffixes", [".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".amr"]),
         "max_file_size_bytes": config.get("max_file_size_bytes", 200 * 1024 * 1024),
-    })
-    submission = AudioSubmission("", None, extract_accepted_number(message.text, message.filename))
+    }
+    pending: list[tuple[Path, str, IncomingAudioMessage, AudioSubmission]] = []
+    for source in sources:
+        digest = sha256_file(source)
+        message = IncomingAudioMessage(
+            message_id=message_id,
+            group_id=group_id,
+            sender_user_id=_normalize(event.get("sender_user_id")),
+            sender_name=sender_name,
+            text=text,
+            attachment_id=digest,
+            filename=source.name,
+            file_size=source.stat().st_size,
+            attachment_hash=digest,
+        )
+        validate_attachment(message, attachment_rules)
+        submission = AudioSubmission(
+            extract_employee_name(message.filename, message.text) or message.sender_name,
+            None,
+            extract_accepted_number(message.text, message.filename),
+        )
+        pending.append((source, digest, message, submission))
+
+    results: list[tuple[str, bool]] = []
     connection = init_db(Path(config["database_path"]))
     try:
-        task_id, created = reserve_task(connection, message, submission)
-        attach_archived_file(connection, task_id, archived)
+        for source, digest, message, submission in pending:
+            archived = _archive_audio(source, digest, Path(config["audio_inbox"]))
+            task_id, created = reserve_task(connection, message, submission)
+            if created:
+                attach_archived_file(connection, task_id, archived)
+            results.append((task_id, created))
     finally:
         connection.close()
-    reply = format_received_reply(task_id) if created else f"【听音质检】\n该音频已接收，无需重复提交。任务编号：{task_id}。"
-    return {"handled": True, "ok": True, "created": created, "task_id": task_id, "reply": reply}
+    task_ids = [task_id for task_id, _ in results]
+    created_ids = [task_id for task_id, created in results if created]
+    duplicate_ids = [task_id for task_id, created in results if not created]
+    if len(results) == 1:
+        task_id, created = results[0]
+        reply = format_received_reply(task_id) if created else f"【听音质检】\n该音频已接收，无需重复提交。任务编号：{task_id}。"
+    elif created_ids:
+        reply = f"【听音质检】\n已接收 {len(created_ids)} 条录音，正在处理。任务编号：{'、'.join(created_ids)}。"
+        if duplicate_ids:
+            reply += f"其中 {len(duplicate_ids)} 条重复音频未重复创建任务。"
+    else:
+        reply = f"【听音质检】\n本次 {len(results)} 条录音均已接收，无需重复提交。任务编号：{'、'.join(task_ids)}。"
+    return {
+        "handled": True,
+        "ok": True,
+        "created": bool(created_ids),
+        "task_id": task_ids[0],
+        "task_ids": task_ids,
+        "created_task_ids": created_ids,
+        "duplicate_task_ids": duplicate_ids,
+        "reply": reply,
+    }
 
 
 def main() -> int:

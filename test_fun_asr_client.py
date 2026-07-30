@@ -71,6 +71,45 @@ class FunASRClientTests(unittest.TestCase):
             self.assertEqual([0], calls["channel_id"])
             self.assertEqual("hello", segments[0].text)
 
+    def test_transcription_deletes_only_the_uploaded_temporary_object(self):
+        with tempfile.TemporaryDirectory() as directory:
+            wav_path = Path(directory) / "mono.wav"
+            self._write_wav(wav_path, 1)
+            with patch("audio_quality.fun_asr_client._required_env", lambda name: "value"):
+                client = AliyunFunASRClient({"delete_temporary_oss_object": True})
+            client._upload_to_oss = lambda audio_path: setattr(client, "_temporary_oss_key", "work-order-audio/test/object.wav") or "https://signed.example/object.wav"
+            deleted = []
+            client._oss_bucket_client = lambda: type("Bucket", (), {"delete_object": lambda self, key: deleted.append(key)})()
+
+            class FakeTranscription:
+                async_call = staticmethod(lambda **kwargs: {"output": {"task_id": "task-1"}})
+                wait = staticmethod(lambda **kwargs: {"output": {"results": [{"transcription_url": "https://example.test/result.json"}]}})
+
+            payload = b'{"transcripts":[{"channel_id":0,"sentences":[{"begin_time":0,"end_time":1000,"text":"hello"}]}]}'
+            response = type("Response", (), {
+                "__enter__": lambda self: self,
+                "__exit__": lambda self, exc_type, exc, tb: False,
+                "read": lambda self: payload,
+            })()
+            with patch.dict("sys.modules", {"dashscope.audio.asr": type("Module", (), {"Transcription": FakeTranscription})()}):
+                with patch("urllib.request.urlopen", lambda url, timeout=60: response):
+                    client.transcribe(wav_path)
+
+            self.assertEqual(["work-order-audio/test/object.wav"], deleted)
+            self.assertIsNone(client._temporary_oss_key)
+
+    def test_temporary_object_delete_failure_does_not_fail_transcription(self):
+        with patch("audio_quality.fun_asr_client._required_env", lambda name: "value"):
+            client = AliyunFunASRClient({"delete_temporary_oss_object": True})
+        client._temporary_oss_key = "work-order-audio/test/object.wav"
+        client._oss_bucket_client = lambda: type("Bucket", (), {
+            "delete_object": lambda self, key: (_ for _ in ()).throw(RuntimeError("temporary failure")),
+        })()
+
+        with self.assertWarnsRegex(RuntimeWarning, "生命周期规则兜底"):
+            client._delete_temporary_oss_object()
+        self.assertIsNone(client._temporary_oss_key)
+
     def test_oss_url_mode_defaults_to_signed_https(self):
         with tempfile.TemporaryDirectory() as directory:
             audio = Path(directory) / "audio.wav"

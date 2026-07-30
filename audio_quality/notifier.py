@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -36,7 +37,18 @@ def schedule_completion_notification(config: dict[str, Any], task_id: str, messa
         "--account", normalize_text(config.get("account")) or "default", "--to", target,
         "--delete-after-run", "--json", "--message", build_delivery_prompt(message),
     ]
-    completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    env = os.environ.copy()
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.setdefault("PYTHONUTF8", "1")
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=max(30, int(config.get("agent_timeout_seconds", 120))) + 30,
+        env=env,
+    )
     if completed.returncode != 0:
         raise AudioQualityError((completed.stderr or completed.stdout).strip() or "OpenClaw 完成通知创建失败")
     start = completed.stdout.find("{")

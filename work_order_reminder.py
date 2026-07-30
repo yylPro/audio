@@ -570,9 +570,31 @@ def reserve_send_batch(
     target: str,
     message_digest_value: str,
     source_name: str,
+    stale_after_seconds: int = 600,
 ) -> str | None:
     try:
         connection.execute("BEGIN IMMEDIATE")
+        running_rows = connection.execute(
+            """
+            SELECT id, created_at FROM send_batches
+            WHERE file_digest = ? AND target = ? AND message_digest = ? AND status = 'sending'
+            """,
+            (file_digest_value, target, message_digest_value),
+        ).fetchall()
+        now_dt = datetime.now().astimezone()
+        for batch_id, created_at in running_rows:
+            try:
+                created_dt = datetime.fromisoformat(str(created_at))
+                if created_dt.tzinfo is None:
+                    created_dt = created_dt.astimezone()
+            except ValueError:
+                created_dt = now_dt
+            age_seconds = (now_dt - created_dt).total_seconds()
+            if age_seconds > max(60, int(stale_after_seconds)):
+                connection.execute(
+                    "UPDATE send_batches SET status = ?, error = ? WHERE id = ?",
+                    ("error", f"Stale sending lock expired after {int(age_seconds)} seconds", batch_id),
+                )
         running = connection.execute(
             """
             SELECT id FROM send_batches
@@ -920,6 +942,7 @@ def process_file(path: Path, config: dict[str, Any], connection: sqlite3.Connect
             config["delivery"]["target"],
             messages_digest(messages),
             path.name,
+            int(config["delivery"].get("send_lock_stale_seconds", int(config["delivery"].get("wait_timeout_seconds", 180)) + 300)),
         )
         if not batch_id:
             raise RuntimeError(

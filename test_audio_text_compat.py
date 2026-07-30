@@ -12,12 +12,20 @@ class AudioTextCompatibilityTests(unittest.TestCase):
         text = r"@Bot #\u542c\u97f3\u68c0\u6d4b\n\u53d7\u7406\u53f7\u7801\uff1a15978157631"
         repaired = repair_multiline_text(text)
         self.assertIn("#听音检测", repaired)
-        self.assertIn("受理号码：15978157631", repaired)
+        self.assertIn("受理号码:15978157631", repaired)
         self.assertEqual("15978157631", extract_accepted_number(repaired))
 
     def test_windows_path_is_not_control_unescaped(self):
         path = r"D:\temp\audio\call.m4a"
         self.assertEqual(path, repair_text(path))
+
+    def test_repairs_html_entities_and_full_width_characters(self):
+        repaired = repair_text("#听音检测&amp;受理号码：１２３ＡＢＣ")
+        self.assertEqual("#听音检测&受理号码:123ABC", repaired)
+
+    def test_repairs_escaped_unicode_and_newlines_together(self):
+        repaired = repair_multiline_text(r"\u5ba2\u6237\n\u5957\u9910\uff1a\uff18\u5143")
+        self.assertEqual("客户\n套餐:8元", repaired)
 
     def test_ingest_accepts_escaped_trigger_text(self):
         with tempfile.TemporaryDirectory() as directory:

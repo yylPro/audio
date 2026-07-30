@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import codecs
+import html
 import re
+import unicodedata
 from typing import Any
 
 
@@ -15,6 +17,7 @@ def compact_text(value: Any) -> str:
     if value is None:
         return ""
     text = str(value).replace("\ufeff", "").replace("\u200b", "")
+    text = unicodedata.normalize("NFKC", html.unescape(text))
     return " ".join(text.strip().split())
 
 
@@ -44,6 +47,7 @@ def repair_text(value: Any) -> str:
     if not text:
         return ""
     decoded = _decode_escaped_text(text)
+    decoded = unicodedata.normalize("NFKC", html.unescape(decoded))
     fixed = _try_fix_mojibake(decoded)
     return compact_text(fixed)
 
@@ -53,4 +57,5 @@ def repair_multiline_text(value: Any) -> str:
         return ""
     text = str(value).replace("\ufeff", "").replace("\u200b", "").strip()
     decoded = _decode_escaped_text(text, decode_controls=True)
+    decoded = unicodedata.normalize("NFKC", html.unescape(decoded))
     return _try_fix_mojibake(decoded).strip()

@@ -1,10 +1,12 @@
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 import audio_quality.worker as worker_module
 from audio_quality.audio_converter import AudioConversionResult
 from audio_quality.audio_quality_processor import AudioQualityError, TranscriptSegment, init_db
+from audio_quality.deepseek_quality import validate_assessment
 from audio_quality.fun_asr_client import FunASRError
 from audio_quality.inbound_adapter import ingest_event
 from audio_quality.worker import run_one, single_worker_lock
@@ -16,7 +18,7 @@ def make_config(root: Path) -> dict:
         "allowed_group_ids": ["924443429"],
         "trigger_aliases": ["#听音检测", "#听音质检"],
         "require_structured_at": True,
-        "max_attachments": 1,
+        "max_attachments": 10,
         "database_path": str(root / "state.sqlite3"),
         "audio_inbox": str(root / "audio-inbox"),
         "output_root": str(root / "reports"),
@@ -60,6 +62,23 @@ class FakeProvider:
         return [TranscriptSegment(0, 1, "S1", "中国移动您好")]
 
 
+class FakeDeepSeekScorer:
+    def assess(self, segments):
+        transcript = " ".join(segment.text for segment in segments)
+        actions = {
+            rule_id: {"present": True, "evidence": [segments[0].text], "reason": ""}
+            for rule_id in (
+                "missing_ask",
+                "missing_check",
+                "missing_compare",
+                "missing_calculate",
+                "missing_retention_action",
+                "missing_retention_success",
+            )
+        }
+        return validate_assessment({"actions": actions, "summary": "双线语义评分"}, transcript)
+
+
 class AudioQualityInboundWorkerTests(unittest.TestCase):
     def test_ingress_archives_and_deduplicates(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -78,6 +97,52 @@ class AudioQualityInboundWorkerTests(unittest.TestCase):
             self.assertEqual("15978157631", row[1])
             self.assertTrue(Path(row[2]).is_file())
 
+    def test_ingress_deduplicates_same_audio_across_messages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "2026-7-23 15978157631.m4a"
+            audio.write_bytes(b"same-audio")
+            config = make_config(root)
+            first = ingest_event(make_event(audio, message_id="message-1"), config)
+            second = ingest_event(make_event(audio, message_id="message-2"), config)
+            self.assertTrue(first["created"])
+            self.assertFalse(second["created"])
+            self.assertEqual(first["task_id"], second["task_id"])
+            connection = init_db(Path(config["database_path"]))
+            try:
+                self.assertEqual(1, connection.execute("SELECT count(*) FROM audio_tasks").fetchone()[0])
+                event = connection.execute("SELECT event_type FROM audio_events WHERE task_id=? AND event_type='duplicate_audio_ignored'", (first["task_id"],)).fetchone()
+            finally:
+                connection.close()
+            self.assertIsNotNone(event)
+
+    def test_ingress_accepts_multiple_audio_files_after_one_at(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_audio = root / "2026-7-23_15978157631.m4a"
+            second_audio = root / "2026-7-23_15978157632.m4a"
+            first_audio.write_bytes(b"first-audio")
+            second_audio.write_bytes(b"second-audio")
+            config = make_config(root)
+
+            result = ingest_event(make_event(
+                first_audio,
+                media_paths=[str(first_audio), str(second_audio)],
+            ), config)
+
+            self.assertTrue(result["created"])
+            self.assertEqual(2, len(result["task_ids"]))
+            self.assertEqual(result["task_ids"], result["created_task_ids"])
+            connection = init_db(Path(config["database_path"]))
+            try:
+                rows = connection.execute(
+                    "SELECT archived_path FROM audio_tasks ORDER BY rowid"
+                ).fetchall()
+            finally:
+                connection.close()
+            self.assertEqual(2, len(rows))
+            self.assertTrue(all(Path(row[0]).is_file() for row in rows))
+
     def test_ingress_rejects_bad_events(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -88,7 +153,8 @@ class AudioQualityInboundWorkerTests(unittest.TestCase):
                 ingest_event(make_event(audio, group_id="other"), config)
             with self.assertRaisesRegex(AudioQualityError, "原生 AT"):
                 ingest_event(make_event(audio, is_at_bot=False), config)
-            with self.assertRaisesRegex(AudioQualityError, "只能包含一个"):
+            config["max_attachments"] = 1
+            with self.assertRaisesRegex(AudioQualityError, "最多可包含 1 个"):
                 ingest_event(make_event(audio, media_paths=[str(audio), str(audio)]), config)
 
     def test_worker_retries_and_writes_report_and_notification_event(self):
@@ -178,6 +244,52 @@ class AudioQualityInboundWorkerTests(unittest.TestCase):
                 worker_module.claim_next_task = original
                 connection.close()
             self.assertEqual([123], calls)
+
+    def test_parallel_compare_keeps_python_primary_and_exports_comparison(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "2026-07-30_15978157631.m4a"
+            audio.write_bytes(b"audio")
+            config = make_config(root)
+            received = ingest_event(make_event(audio), config)
+            connection = init_db(Path(config["database_path"]))
+            comparison = root / "reports" / "2026-07-30_降挽质检方案对比-语义评分.xlsx"
+            original_export = worker_module.export_deepseek_comparison
+            export_calls = []
+            worker_module.export_deepseek_comparison = (
+                lambda conn, output, days, rules: export_calls.append(days) or [comparison]
+            )
+            try:
+                run_one(
+                    connection,
+                    FakeProvider(),
+                    "worker-1",
+                    config["asr"],
+                    config["quality"],
+                    Path(config["output_root"]),
+                    deepseek_scorer=FakeDeepSeekScorer(),
+                    deepseek_mode="parallel_compare",
+                )
+                quality = connection.execute(
+                    "SELECT employee_speaker FROM quality_results WHERE task_id=?",
+                    (received["task_id"],),
+                ).fetchone()
+                semantic = connection.execute(
+                    "SELECT score FROM deepseek_quality_assessments WHERE task_id=?",
+                    (received["task_id"],),
+                ).fetchone()
+                event_data = connection.execute(
+                    "SELECT event_data FROM audio_events WHERE task_id=? AND event_type='completion_reply_ready' ORDER BY event_id DESC LIMIT 1",
+                    (received["task_id"],),
+                ).fetchone()[0]
+            finally:
+                worker_module.export_deepseek_comparison = original_export
+                connection.close()
+
+            self.assertNotEqual("DeepSeek语义审核", quality[0])
+            self.assertIsNotNone(semantic)
+            self.assertEqual([{"2026-07-30"}], export_calls)
+            self.assertEqual(str(comparison), json.loads(event_data)["comparison_report_path"])
 
 
 if __name__ == "__main__":

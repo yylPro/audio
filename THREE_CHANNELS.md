@@ -6,7 +6,7 @@
 |---|---|---|---|---|
 | 功能一：Excel工单催办 | `inbox`目录 | Python读取、过滤、分组、计数 | DeepSeek仅原样转发 | 已实现 |
 | 功能二：沟通记录整理 | 待确认 | 无 | DeepSeek Chat | 旧规则已删除，当前未启用 |
-| 功能三：录音转写与质检 | 群内音频文件或`audio-inbox` | 下载、转写任务、结果归档 | ASR + DeepSeek Chat | 等待选择ASR |
+| 功能三：录音转写与质检 | 群内音频文件或`audio-inbox` | 下载、转写任务、结果归档 | 阿里 FunASR + DeepSeek Chat | 已初步可用 |
 
 ## DeepSeek官方插件
 
@@ -65,6 +65,26 @@ cd "D:\代维\工单提醒"
 
 ## 功能三现状
 
-元宝插件支持普通文件附件下载，`.mp3/.wav/.ogg` 可作为文件处理；语音消息气泡目前只产生 `[voice]` 占位符。因此录音应作为文件附件发送。
+功能三现在已经不是纯占位了，当前可用链路是：
 
-DeepSeek是文本模型，不能代替ASR。选择阿里云、腾讯云或其他ASR后，还需要实现：提交音频、轮询任务、保存逐字稿，再把逐字稿交给DeepSeek。未配置ASR前，功能三必须保持`enabled=false`。
+`元宝群消息 -> inbound_adapter -> audio_tasks -> worker -> 阿里 FunASR -> DeepSeek 整理/评分 -> 每日Excel`
+
+元宝插件支持普通文件附件下载，`.mp3/.wav/.m4a/.ogg` 等文件附件可进入处理链；语音消息气泡目前仍只会产生 `[voice]` 占位符，所以录音应尽量作为文件附件发送。
+
+当前主 ASR 是 `aliyun_fun_asr`，本地 `faster-whisper` 仅保留为备用。实际运行请以 `audio_quality_config.json` 为准，`config.json` 里的功能状态字段只是总览，不是音频 worker 的主开关。
+
+推荐启动前先确认：
+
+1. `audio_quality.env` 已填写 `DASHSCOPE_API_KEY`、`DEEPSEEK_API_KEY` 和阿里云 OSS 凭据。
+2. `audio_quality_config.json` 中 `enabled=true`，并填写了真实群 `group_id`。
+3. `audio_quality_runtime\\.venv` 可正常运行 `audio_quality.worker`。
+4. `state\\logs\\audio_quality_worker.log` 可写。
+
+常用启动命令：
+
+```powershell
+audio_quality_runtime\.venv\Scripts\python.exe -m audio_quality.worker --config audio_quality_config.json --once
+audio_quality_runtime\.venv\Scripts\python.exe -m audio_quality.worker --config audio_quality_config.json --poll-seconds 3
+```
+
+如果要做计划任务，先用 `运行听音质检后台.ps1` 验证后台可持续重启，再装 `安装听音质检自动运行.ps1`。

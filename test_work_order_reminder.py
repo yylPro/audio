@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timedelta
 from unittest.mock import patch
 from pathlib import Path
 
@@ -163,6 +164,24 @@ class ReminderTests(unittest.TestCase):
 
         self.assertEqual(sum(result is not None for result in results), 1)
         self.assertEqual(sum(result is None for result in results), 1)
+
+    def test_stale_send_batch_lock_expires(self):
+        database = Path(self.config["paths"]["state_db"])
+        connection = app.init_db(database)
+        old_created = (datetime.now().astimezone() - timedelta(hours=2)).isoformat(timespec="seconds")
+        connection.execute(
+            "INSERT INTO send_batches VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("oldlock", "file", "group:test", "message", "source.xlsx", old_created, "sending", None),
+        )
+        connection.commit()
+
+        batch_id = app.reserve_send_batch(connection, "file", "group:test", "message", "source.xlsx", stale_after_seconds=60)
+        old_status = connection.execute("SELECT status,error FROM send_batches WHERE id='oldlock'").fetchone()
+        connection.close()
+
+        self.assertIsNotNone(batch_id)
+        self.assertEqual("error", old_status[0])
+        self.assertIn("Stale sending lock expired", old_status[1])
 
     def test_gateway_preflight_retries_until_ready(self):
         self.config["delivery"].update(

@@ -3,7 +3,7 @@
   "allowed_group_ids": ["YOUR_GROUP_ID"],
   "trigger_aliases": ["#听音检测", "#听音质检", "#录音质检"],
   "require_structured_at": true,
-  "max_attachments": 1,
+  "max_attachments": 10,
   "supported_audio_suffixes": [".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".amr"],
   "max_file_size_bytes": 209715200,
   "database_path": "D:\\path\\to\\project\\state\\assistant_v2.sqlite3",
@@ -34,6 +34,7 @@
     "oss_access_key_secret_env": "ALIBABA_CLOUD_ACCESS_KEY_SECRET",
     "oss_url_mode": "signed_https",
     "signed_url_expires_seconds": 3600,
+    "delete_temporary_oss_object": true,
     "max_attempts": 3,
     "retry_delays_seconds": [10, 30, 90],
     "channel_id": "auto",
@@ -65,6 +66,14 @@
     "stale_after_seconds": 600
   },
   "quality": {
-    "deepseek_mode": "organize_only_then_python_score"
+    "deepseek_mode": "parallel_compare"
+  },
+  "deepseek_scoring": {
+    "enabled": true,
+    "model": "deepseek-chat",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "base_url": "https://api.deepseek.com/chat/completions",
+    "timeout_seconds": 120,
+    "max_input_chars": 18000
   }
 }
