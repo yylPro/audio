@@ -6,10 +6,10 @@
       "status": "ready"
     },
     "communication_record": {
-      "name": "功能二：沟通记录整理",
+      "name": "功能二：回单整理",
       "enabled": false,
-      "status": "scaffolded-rules-pending",
-      "command": "#沟通记录"
+      "status": "framework-ready-rules-pending",
+      "command": "#回单整理"
     },
     "audio_quality": {
       "name": "功能三：录音转写与质检",
@@ -38,7 +38,7 @@
     "strict_empty_handler": false,
     "strict_field_values": false,
     "acceptance_number_pattern": "\\d{5,20}",
-    "excluded_statuses": ["已完成", "完成", "已关闭", "关闭", "已取消", "取消", "已归档", "归档"]
+    "excluded_statuses": ["已完成", "完成", "已关闭", "关闭", "已取消", "取消", "已归档", "归档", "已回单", "回单"]
   },
   "file_modes": {
     "detail_keywords": ["投诉", "当天到期", "今日到期"],
@@ -84,6 +84,8 @@
     "model": "deepseek/deepseek-chat",
     "history_messages": 0,
     "business_type": "default",
+    "trigger": "#回单整理",
+    "reminder_block_statuses": ["replied", "已回单"],
     "max_concurrency": 3,
     "max_retries": 1,
     "max_tokens": null,

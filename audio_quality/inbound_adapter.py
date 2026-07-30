@@ -118,6 +118,14 @@ def ingest_event(event: dict[str, Any], config: dict[str, Any]) -> dict[str, Any
     connection = init_db(Path(config["database_path"]))
     try:
         for source, digest, message, submission in pending:
+            existing = connection.execute(
+                "SELECT task_id FROM audio_tasks WHERE group_id=? AND attachment_hash=? ORDER BY created_at LIMIT 1",
+                (group_id, digest),
+            ).fetchone()
+            if existing:
+                task_id, created = reserve_task(connection, message, submission)
+                results.append((task_id, created))
+                continue
             archived = _archive_audio(source, digest, Path(config["audio_inbox"]))
             task_id, created = reserve_task(connection, message, submission)
             if created:

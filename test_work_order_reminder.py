@@ -220,6 +220,50 @@ class ReminderTests(unittest.TestCase):
         self.assertEqual((total, pending), (2, 1))
         self.assertEqual(counts, {"叶于琳": 1})
 
+    def test_replied_work_order_status_skips_reminder_by_order_or_customer_number(self):
+        path = Path(self.config["paths"]["inbox"]) / "投诉表格.csv"
+        with path.open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["工单流水号", "受理号码", "当前处理人", "工单状态"])
+            writer.writerow(["A1234", "13800000000", "叶于琳", "待处理"])
+            writer.writerow(["A5678", "13900000000", "李四", "待处理"])
+            writer.writerow(["A9999", "13700000000", "王五", "待处理"])
+
+        connection = app.init_db(Path(self.config["paths"]["state_db"]))
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        for values in (
+            ("default", "A1234", "13800000000", "u1", "replied", now, "task-1", now),
+            ("default", "OTHER", "13900000000", "u2", "replied", now, "task-2", now),
+        ):
+            connection.execute(
+                """
+                INSERT INTO work_order_status (
+                    business_type, order_id, customer_number, handler_user_id,
+                    status, submitted_at, submission_task_id, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                values,
+            )
+        connection.commit()
+
+        total, rows = app.collect_work_orders(path, self.config)
+        filtered = app.filter_replied_work_orders(rows, connection, self.config)
+        messages = app.build_detail_messages(filtered, self.config)
+        self.assertEqual(total, 3)
+        self.assertEqual([row.ticket for row in filtered], ["A9999"])
+        self.assertNotIn("A1234", "\n".join(messages))
+        self.assertNotIn("A5678", "\n".join(messages))
+        self.assertIn("A9999", "\n".join(messages))
+
+        status = app.process_file(path, self.config, connection, dry_run=True)
+        pending_rows = connection.execute(
+            "SELECT pending_rows FROM imports ORDER BY imported_at DESC LIMIT 1"
+        ).fetchone()[0]
+        connection.close()
+
+        self.assertEqual("preview", status)
+        self.assertEqual(1, pending_rows)
+
     def test_preview_records_audit_without_skip_side_effect(self):
         path = self.make_csv()
         connection = app.init_db(Path(self.config["paths"]["state_db"]))

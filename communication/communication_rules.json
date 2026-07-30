@@ -1,15 +1,40 @@
 {
   "schema_version": 1,
-  "status": "placeholder",
-  "trigger": "#沟通记录",
+  "status": "draft",
+  "trigger": "#回单整理",
+  "trigger_aliases": ["#回单整理"],
   "minimum_content_characters": 4,
   "order_id_pattern": "[A-Za-z0-9_-]{4,64}",
-  "allowed_contact_statuses": [],
+  "customer_number_pattern": "[0-9A-Za-z*#]{5,32}",
+  "allowed_contact_statuses": ["已联系", "未接通", "需转派", "需跟进", "已短信"],
   "terminology": {},
-  "forbidden_phrases": [],
+  "forbidden_phrases": ["应该已经", "大概处理", "可能联系", "估计"],
+  "required_text_patterns": [
+    {"pattern": "沟通内容|沟通情况|沟通后|经沟通", "description": "沟通内容"},
+    {"pattern": "处理方案|处理意见|已记录|请协助|转派|短信", "description": "处理方案"},
+    {"pattern": "客户态度|客户满意|客户不满|客户知晓|未接|挂机|抱怨", "description": "客户态度或联系结果"}
+  ],
+  "output_rules": [
+    "回单需写明联系日期、时间和外呼号码；未提供年份时由模型不得自行补年份，应标记 missing。",
+    "回单需保留客户号码、客户诉求、已解释内容、处理方案和后续转派要求。",
+    "推荐格式：YYYY-MM-DD X时X分用10086外呼客户号码，沟通内容：...（处理方案：...），客户态度：...。",
+    "未接通场景应写明多次外呼时间、外呼号码和短信情况，不得写成已联系。",
+    "套餐变更场景需包含套餐内容提醒、生效时间、客户知晓。"
+  ],
+  "examples": [
+    {
+      "input": "18376697569，20260703174229X749589475，我处已于2026年7月11日18:24分电话13457142185联系客户，客户表示要反馈的是号码13788373366最低消费129元的问题，已经跟客户解释号码属于靓号合约未到期中途取消会有违约金，但是客户表示办理时未告知要求转到办理营业厅核查处理。",
+      "output": {
+        "status": "需转派",
+        "text": "2026-07-11 18时24分用13457142185外呼客户18376697569，沟通内容：客户反馈13788373366号码最低消费129元问题，已解释该号码属于靓号合约，未到期中途取消会产生违约金。（处理方案：按客户诉求转派办理营业厅核查处理。）客户态度：客户表示办理时未告知，要求继续核查处理。",
+        "missing": [],
+        "warnings": []
+      }
+    }
+  ],
   "required_information_by_status": {},
   "notes": [
-    "业务输入格式和输出口径尚未确认，启用前必须补充真实规则。",
-    "allowed_contact_statuses 为空时，模型输出校验会明确失败。"
+    "规则来自初步样例，正式启用前仍应补充更多真实输入输出。",
+    "模型输出必须经过 allowed_contact_statuses、禁用表达和 required_text_patterns 校验。"
   ]
 }

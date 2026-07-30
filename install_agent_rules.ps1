@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 
 $source = Join-Path $PSScriptRoot "AGENT_RULES_WORK_ORDER.md"
 $target = "D:\OpenClaw\workspace\AGENTS.md"
@@ -22,22 +22,40 @@ if (Test-Path -LiteralPath $target) {
 
 $rules = Get-Content -LiteralPath $source -Raw -Encoding UTF8
 $block = "$startMarker`r`n$rules`r`n$endMarker"
-$pattern = [regex]::Escape($startMarker) + ".*?" + [regex]::Escape($endMarker)
+$startIndex = $existing.IndexOf($startMarker)
+$endIndex = -1
+if ($startIndex -ge 0) {
+    $endIndex = $existing.IndexOf($endMarker, $startIndex)
+}
+$existingIsBlank = [string]::IsNullOrWhiteSpace($existing)
 
-if ($existing -match $pattern) {
-    $updated = [regex]::Replace(
-        $existing,
-        $pattern,
-        [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $block },
-        [System.Text.RegularExpressions.RegexOptions]::Singleline
-    )
+$updated = $null
+if (($startIndex -ge 0) -and ($endIndex -ge 0)) {
+    $endIndex = $endIndex + $endMarker.Length
+    $before = $existing.Substring(0, $startIndex).TrimEnd()
+    $after = $existing.Substring($endIndex).TrimStart()
+    $beforeIsBlank = [string]::IsNullOrWhiteSpace($before)
+    $afterIsBlank = [string]::IsNullOrWhiteSpace($after)
+    if ($beforeIsBlank -and $afterIsBlank) {
+        $updated = $block
+    } elseif ($beforeIsBlank) {
+        $updated = $block + "`r`n`r`n" + $after
+    } elseif ($afterIsBlank) {
+        $updated = $before + "`r`n`r`n" + $block
+    } else {
+        $updated = $before + "`r`n`r`n" + $block + "`r`n`r`n" + $after
+    }
     Write-Host "已更新现有工单助手规则。"
 }
-elseif ([string]::IsNullOrWhiteSpace($existing)) {
-    $updated = $block
-    Write-Host "已创建工单助手规则。"
+
+if ($null -eq $updated) {
+    if ($existingIsBlank) {
+        $updated = $block
+        Write-Host "已创建工单助手规则。"
+    }
 }
-else {
+
+if ($null -eq $updated) {
     $updated = $existing.TrimEnd() + "`r`n`r`n" + $block
     Write-Host "已追加工单助手规则，其他规则保持不变。"
 }

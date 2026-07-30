@@ -22,6 +22,7 @@ from typing import Any, Iterable
 SUPPORTED_SUFFIXES = {".xlsx", ".xlsm", ".csv"}
 SCIENTIFIC_NOTATION_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?[eE][+-]?\d+$")
 MENTION_RE = re.compile(r"(?:^|\s)@(\S+?)(?=\s|$|[，。,.：:])")
+REPLIED_WORK_ORDER_STATUSES = {"replied", "已回单"}
 
 
 @dataclass(frozen=True)
@@ -556,12 +557,86 @@ def init_db(path: Path) -> sqlite3.Connection:
         )
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS work_order_status (
+            business_type TEXT NOT NULL,
+            order_id TEXT NOT NULL,
+            customer_number TEXT,
+            handler_user_id TEXT,
+            status TEXT NOT NULL,
+            submitted_at TEXT,
+            submission_task_id TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (business_type, order_id)
+        )
+        """
+    )
+    ensure_column(connection, "work_order_status", "customer_number", "TEXT")
     connection.commit()
     return connection
 
 
+def ensure_column(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    existing = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in existing:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def already_imported(connection: sqlite3.Connection, digest: str) -> bool:
     return connection.execute("SELECT 1 FROM imports WHERE digest = ?", (digest,)).fetchone() is not None
+
+
+def replied_work_order_keys(connection: sqlite3.Connection, work_orders: Iterable[WorkOrderRow], config: dict[str, Any]) -> tuple[set[str], set[str]]:
+    order_ids = {normalize_identifier(row.ticket) for row in work_orders if normalize_identifier(row.ticket)}
+    customer_numbers = {
+        normalize_identifier(row.acceptance_number)
+        for row in work_orders
+        if normalize_identifier(row.acceptance_number)
+    }
+    if not order_ids and not customer_numbers:
+        return set(), set()
+    communication = config.get("communication", {}) if isinstance(config.get("communication"), dict) else {}
+    business_type = normalize_text(communication.get("business_type", "default")) or "default"
+    statuses = {
+        normalize_text(item)
+        for item in communication.get("reminder_block_statuses", sorted(REPLIED_WORK_ORDER_STATUSES))
+        if normalize_text(item)
+    } or REPLIED_WORK_ORDER_STATUSES
+    placeholders = ",".join("?" for _ in statuses)
+    rows = connection.execute(
+        f"""
+        SELECT order_id, customer_number FROM work_order_status
+        WHERE business_type = ? AND status IN ({placeholders})
+        """,
+        (business_type, *sorted(statuses)),
+    ).fetchall()
+    replied_orders: set[str] = set()
+    replied_numbers: set[str] = set()
+    for order_id, customer_number in rows:
+        normalized_order_id = normalize_identifier(order_id)
+        normalized_customer_number = normalize_identifier(customer_number)
+        if normalized_order_id in order_ids:
+            replied_orders.add(normalized_order_id)
+        if normalized_customer_number in customer_numbers:
+            replied_numbers.add(normalized_customer_number)
+    return replied_orders, replied_numbers
+
+
+def filter_replied_work_orders(
+    work_orders: list[WorkOrderRow],
+    connection: sqlite3.Connection,
+    config: dict[str, Any],
+) -> list[WorkOrderRow]:
+    replied_orders, replied_numbers = replied_work_order_keys(connection, work_orders, config)
+    if not replied_orders and not replied_numbers:
+        return work_orders
+    return [
+        row
+        for row in work_orders
+        if normalize_identifier(row.ticket) not in replied_orders
+        and normalize_identifier(row.acceptance_number) not in replied_numbers
+    ]
 
 
 def reserve_send_batch(
@@ -915,6 +990,7 @@ def process_file(path: Path, config: dict[str, Any], connection: sqlite3.Connect
     ensure_input_file_ready(path, config)
     digest = file_digest(path)
     total_rows, work_orders = collect_work_orders(path, config)
+    work_orders = filter_replied_work_orders(work_orders, connection, config)
     pending_rows = len(work_orders)
     counts = Counter(row.handler for row in work_orders)
     validate_work_order_values(path, work_orders, config)

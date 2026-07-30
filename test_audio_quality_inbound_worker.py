@@ -143,6 +143,36 @@ class AudioQualityInboundWorkerTests(unittest.TestCase):
             self.assertEqual(2, len(rows))
             self.assertTrue(all(Path(row[0]).is_file() for row in rows))
 
+    def test_batch_duplicate_does_not_block_new_audio_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            duplicate_audio = root / "2026-7-23_15978157631.m4a"
+            new_audio = root / "2026-7-23_15978157632.m4a"
+            duplicate_audio.write_bytes(b"already-processed")
+            new_audio.write_bytes(b"new-audio")
+            config = make_config(root)
+
+            original = ingest_event(make_event(duplicate_audio, message_id="message-1"), config)
+            batch = ingest_event(make_event(
+                duplicate_audio,
+                message_id="message-2",
+                media_paths=[str(duplicate_audio), str(new_audio)],
+            ), config)
+
+            self.assertTrue(batch["created"])
+            self.assertEqual([original["task_id"]], batch["duplicate_task_ids"])
+            self.assertEqual(1, len(batch["created_task_ids"]))
+            connection = init_db(Path(config["database_path"]))
+            try:
+                rows = connection.execute(
+                    "SELECT task_id,status,original_filename FROM audio_tasks ORDER BY rowid"
+                ).fetchall()
+            finally:
+                connection.close()
+            self.assertEqual(2, len(rows))
+            self.assertEqual("received", rows[1][1])
+            self.assertEqual(new_audio.name, rows[1][2])
+
     def test_ingress_rejects_bad_events(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
