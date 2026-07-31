@@ -556,7 +556,9 @@ def ensure_gateway_ready(config: dict[str, Any]) -> None:
 
 def init_db(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
+    connection = sqlite3.connect(path, timeout=10)
+    connection.execute("PRAGMA busy_timeout = 10000")
+    connection.execute("PRAGMA journal_mode = WAL")
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS imports (

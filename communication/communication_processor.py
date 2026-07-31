@@ -296,6 +296,7 @@ def init_db(path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(path, timeout=10)
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA busy_timeout = 10000")
+    connection.execute("PRAGMA journal_mode = WAL")
     connection.executescript(
         """
         CREATE TABLE IF NOT EXISTS work_order_status (
