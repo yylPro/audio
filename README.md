@@ -8,16 +8,16 @@
 
 ## 统一启动入口
 
-日常使用请运行 `工单助手控制台.ps1`，它集中提供工单催办、两个自动运行任务、补丁安装和发送审计入口。原有 `.ps1` 和 `.cmd` 脚本仍保留，已被现有计划任务或快捷方式引用，不建议删除。
+日常使用请双击 `launch_console.cmd`，或运行 `work_order_console.ps1`。它们集中提供工单催办、两个自动运行任务、补丁安装和发送审计入口。中文名称的 `工单助手控制台.ps1` 与 `打开工单助手控制台.cmd` 保留为兼容入口；原有 `.ps1` 和 `.cmd` 脚本也继续保留，以免影响已经存在的计划任务或快捷方式。
 
 ```powershell
-.\工单助手控制台.ps1
+.\work_order_console.ps1
 ```
 
 也可直接执行某一操作，例如：
 
 ```powershell
-.\工单助手控制台.ps1 -Action InstallReminderSchedule -IntervalMinutes 5
+.\work_order_console.ps1 -Action InstallReminderSchedule -IntervalMinutes 5
 ```
 
 完整部署状态和验收命令见 `THREE_CHANNELS.md`，永久规则见 `AGENT_RULES_WORK_ORDER.md`。
