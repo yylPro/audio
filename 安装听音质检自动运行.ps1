@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$TaskName = "听音质检后台",
     [string]$ProjectDir = $PSScriptRoot
 )

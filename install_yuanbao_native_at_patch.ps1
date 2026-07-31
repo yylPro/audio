@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$OpenClawCmd = "D:\OpenClaw\openclaw.cmd",
     [string]$ProjectDir = $PSScriptRoot,
