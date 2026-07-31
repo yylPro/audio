@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sqlite3
 import sys
+import urllib.error
+import urllib.request
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -193,6 +196,86 @@ def build_model_prompt(submission: ParsedSubmission, rules: dict[str, Any], prom
     return prompt_text.strip() + "\n\n当前待整理回单：\n" + json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+def build_python_result(submission: ParsedSubmission, rules: dict[str, Any]) -> ModelResult:
+    """Build a conservative baseline without inventing facts.
+
+    This is the comparison version shown alongside the DeepSeek result. It keeps
+    the employee's wording as the communication facts and only infers a status
+    from explicit contact words.
+    """
+    content = submission.raw_content
+    content = re.sub(rf"^{re.escape(submission.customer_number)}[，,、\s]+", "", content)
+    content = re.sub(rf"^{re.escape(submission.order_id)}[，,、\s]+", "", content)
+    if any(word in content for word in ("未接通", "无人接听", "未接电话", "打不通")):
+        status = "未接通"
+    elif "短信" in content and not any(word in content for word in ("联系客户", "电话联系", "外呼客户")):
+        status = "已短信"
+    elif any(word in content for word in ("转派", "转到", "转交")):
+        status = "需转派"
+    elif any(word in content for word in ("联系客户", "联系到客户", "外呼客户", "电话联系", "已联系")):
+        status = "已联系"
+    else:
+        status = "需跟进"
+
+    missing = []
+    if not re.search(r"\d{4}年\d{1,2}月\d{1,2}日|\d{4}-\d{1,2}-\d{1,2}", content):
+        missing.append("联系日期时间")
+    if not re.search(r"外呼|拨打|电话\s*\d{7,12}|联系号码", content):
+        missing.append("外呼号码")
+    text = (
+        f"工单号：{submission.order_id}；客户号码：{submission.customer_number}；"
+        f"联系日期时间：未提供；外呼号码：未提供；沟通内容：{content}"
+        f"（处理方案：根据原始描述执行后续处理），客户态度：根据原始描述记录。"
+    )
+    return ModelResult(status=status, text=text, missing=missing, warnings=["Python标准版未补充原文未提供的联系时间和外呼号码"])
+
+
+def generate_deepseek_result(
+    submission: ParsedSubmission,
+    rules: dict[str, Any],
+    prompt_text: str,
+    *,
+    api_key: str | None = None,
+    base_url: str = "https://api.deepseek.com/chat/completions",
+    model: str = "deepseek-chat",
+    timeout_seconds: int = 90,
+) -> ModelResult:
+    """Generate and validate the second comparison version through DeepSeek."""
+    key = (api_key or os.environ.get("DEEPSEEK_API_KEY", "")).strip()
+    if not key:
+        raise CommunicationError("未配置 DEEPSEEK_API_KEY，无法生成 DeepSeek 版本")
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "严格按用户提供的回单规则整理，只返回 JSON，不得质疑规则是否确认。"},
+            {"role": "user", "content": build_model_prompt(submission, rules, prompt_text)},
+        ],
+        "temperature": 0.1,
+        "stream": False,
+    }
+    request = urllib.request.Request(
+        base_url,
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise CommunicationError(f"DeepSeek 请求失败：HTTP {exc.code} {detail}") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CommunicationError(f"DeepSeek 请求失败：{exc}") from exc
+    content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
+    try:
+        start, end = content.find("{"), content.rfind("}")
+        payload = json.loads(content[start:end + 1]) if start >= 0 and end >= start else {}
+    except json.JSONDecodeError as exc:
+        raise CommunicationError(f"DeepSeek 未返回有效 JSON：{exc}") from exc
+    return validate_model_result(payload, rules)
+
+
 def init_db(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, timeout=10)
@@ -208,6 +291,7 @@ def init_db(path: Path) -> sqlite3.Connection:
             status TEXT NOT NULL,
             submitted_at TEXT,
             submission_task_id TEXT,
+            source_digest TEXT,
             updated_at TEXT NOT NULL,
             PRIMARY KEY (business_type, order_id)
         );
@@ -244,6 +328,7 @@ def init_db(path: Path) -> sqlite3.Connection:
         """
     )
     ensure_column(connection, "work_order_status", "customer_number", "TEXT")
+    ensure_column(connection, "work_order_status", "source_digest", "TEXT")
     ensure_column(connection, "communication_tasks", "customer_number", "TEXT")
     connection.commit()
     return connection
@@ -424,6 +509,25 @@ def format_reply(order_id: str, result: ModelResult) -> str:
         lines.extend(["", "待补充：" + "、".join(result.missing)])
     lines.extend(["", "该工单已登记为已回单。"])
     return "\n".join(lines)
+
+
+def format_dual_reply(order_id: str, python_result: ModelResult, deepseek_result: ModelResult) -> str:
+    return "\n".join(
+        [
+            "【回单整理】",
+            f"工单号：{order_id}",
+            "",
+            "【Python标准版】",
+            f"回单状态：{python_result.status}",
+            python_result.text,
+            "",
+            "【DeepSeek智能版】",
+            f"回单状态：{deepseek_result.status}",
+            deepseek_result.text,
+            "",
+            "以上两版均依据同一回单规则生成，请对比确认。",
+        ]
+    )
 
 
 def parse_args() -> argparse.Namespace:

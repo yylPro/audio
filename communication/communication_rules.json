@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "draft",
+  "status": "confirmed",
   "trigger": "#回单整理",
   "trigger_aliases": ["#回单整理"],
   "minimum_content_characters": 4,
@@ -15,7 +15,7 @@
     {"pattern": "客户态度|客户满意|客户不满|客户知晓|未接|挂机|抱怨", "description": "客户态度或联系结果"}
   ],
   "output_rules": [
-    "回单需写明联系日期、时间和外呼号码；未提供年份时由模型不得自行补年份，应标记 missing。",
+    "回单需写明联系日期、时间和外呼号码；未提供时明确标记未提供，不得自行编造。",
     "回单需保留客户号码、客户诉求、已解释内容、处理方案和后续转派要求。",
     "推荐格式：YYYY-MM-DD X时X分用10086外呼客户号码，沟通内容：...（处理方案：...），客户态度：...。",
     "未接通场景应写明多次外呼时间、外呼号码和短信情况，不得写成已联系。",
@@ -34,7 +34,7 @@
   ],
   "required_information_by_status": {},
   "notes": [
-    "规则来自初步样例，正式启用前仍应补充更多真实输入输出。",
+    "规则已确认；后续可继续用真实样例补充边界案例，但不得阻止当前规则执行。",
     "模型输出必须经过 allowed_contact_statuses、禁用表达和 required_text_patterns 校验。"
   ]
 }

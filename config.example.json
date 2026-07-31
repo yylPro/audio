@@ -7,8 +7,8 @@
     },
     "communication_record": {
       "name": "功能二：回单整理",
-      "enabled": false,
-      "status": "framework-ready-rules-pending",
+      "enabled": true,
+      "status": "ready-dual-output",
       "command": "#回单整理"
     },
     "audio_quality": {
@@ -77,7 +77,7 @@
     "member_mapping_file": "D:\\代维\\工单提醒\\yuanbao_members.json"
   },
   "communication": {
-    "enabled": false,
+    "enabled": true,
     "processor": "D:\\代维\\工单提醒\\communication\\communication_processor.py",
     "rules": "D:\\代维\\工单提醒\\communication\\communication_rules.json",
     "prompt": "D:\\代维\\工单提醒\\communication\\prompts\\communication_record.md",

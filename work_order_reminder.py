@@ -567,12 +567,14 @@ def init_db(path: Path) -> sqlite3.Connection:
             status TEXT NOT NULL,
             submitted_at TEXT,
             submission_task_id TEXT,
+            source_digest TEXT,
             updated_at TEXT NOT NULL,
             PRIMARY KEY (business_type, order_id)
         )
         """
     )
     ensure_column(connection, "work_order_status", "customer_number", "TEXT")
+    ensure_column(connection, "work_order_status", "source_digest", "TEXT")
     connection.commit()
     return connection
 
@@ -587,7 +589,61 @@ def already_imported(connection: sqlite3.Connection, digest: str) -> bool:
     return connection.execute("SELECT 1 FROM imports WHERE digest = ?", (digest,)).fetchone() is not None
 
 
-def replied_work_order_keys(connection: sqlite3.Connection, work_orders: Iterable[WorkOrderRow], config: dict[str, Any]) -> tuple[set[str], set[str]]:
+def sync_work_order_source(
+    connection: sqlite3.Connection,
+    work_orders: Iterable[WorkOrderRow],
+    source_digest: str,
+    config: dict[str, Any],
+) -> None:
+    """Bind current rows to this file version and reset stale-file statuses."""
+    communication = config.get("communication", {}) if isinstance(config.get("communication"), dict) else {}
+    business_type = normalize_text(communication.get("business_type", "default")) or "default"
+    now = datetime.now().astimezone().isoformat(timespec="seconds")
+    for row in work_orders:
+        order_id = normalize_identifier(row.ticket)
+        if not order_id:
+            continue
+        connection.execute(
+            """
+            UPDATE work_order_status
+            SET status = CASE
+                    WHEN source_digest IS NOT NULL AND source_digest <> ? THEN 'pending'
+                    ELSE status END,
+                submission_task_id = CASE
+                    WHEN source_digest IS NOT NULL AND source_digest <> ? THEN NULL
+                    ELSE submission_task_id END,
+                source_digest = ?, updated_at = ?
+            WHERE order_id = ?
+            """,
+            (source_digest, source_digest, source_digest, now, order_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO work_order_status (
+                business_type, order_id, customer_number, status, source_digest, updated_at
+            ) VALUES (?, ?, ?, 'pending', ?, ?)
+            ON CONFLICT(business_type, order_id) DO UPDATE SET
+                customer_number = COALESCE(excluded.customer_number, work_order_status.customer_number),
+                status = CASE
+                    WHEN work_order_status.source_digest IS NOT NULL AND work_order_status.source_digest <> excluded.source_digest
+                    THEN 'pending' ELSE work_order_status.status END,
+                submission_task_id = CASE
+                    WHEN work_order_status.source_digest IS NOT NULL AND work_order_status.source_digest <> excluded.source_digest
+                    THEN NULL ELSE work_order_status.submission_task_id END,
+                source_digest = excluded.source_digest,
+                updated_at = excluded.updated_at
+            """,
+            (business_type, order_id, normalize_identifier(row.acceptance_number) or None, source_digest, now),
+        )
+    connection.commit()
+
+
+def replied_work_order_keys(
+    connection: sqlite3.Connection,
+    work_orders: Iterable[WorkOrderRow],
+    config: dict[str, Any],
+    source_digest: str | None = None,
+) -> tuple[set[str], set[str]]:
     order_ids = {normalize_identifier(row.ticket) for row in work_orders if normalize_identifier(row.ticket)}
     customer_numbers = {
         normalize_identifier(row.acceptance_number)
@@ -604,12 +660,16 @@ def replied_work_order_keys(connection: sqlite3.Connection, work_orders: Iterabl
         if normalize_text(item)
     } or REPLIED_WORK_ORDER_STATUSES
     placeholders = ",".join("?" for _ in statuses)
+    source_clause = " AND source_digest = ?" if source_digest else ""
+    params: tuple[Any, ...] = (*sorted(statuses),)
+    if source_digest:
+        params += (source_digest,)
     rows = connection.execute(
         f"""
         SELECT order_id, customer_number FROM work_order_status
-        WHERE business_type = ? AND status IN ({placeholders})
+        WHERE status IN ({placeholders}){source_clause}
         """,
-        (business_type, *sorted(statuses)),
+        params,
     ).fetchall()
     replied_orders: set[str] = set()
     replied_numbers: set[str] = set()
@@ -627,8 +687,9 @@ def filter_replied_work_orders(
     work_orders: list[WorkOrderRow],
     connection: sqlite3.Connection,
     config: dict[str, Any],
+    source_digest: str | None = None,
 ) -> list[WorkOrderRow]:
-    replied_orders, replied_numbers = replied_work_order_keys(connection, work_orders, config)
+    replied_orders, replied_numbers = replied_work_order_keys(connection, work_orders, config, source_digest)
     if not replied_orders and not replied_numbers:
         return work_orders
     return [
@@ -990,7 +1051,10 @@ def process_file(path: Path, config: dict[str, Any], connection: sqlite3.Connect
     ensure_input_file_ready(path, config)
     digest = file_digest(path)
     total_rows, work_orders = collect_work_orders(path, config)
-    work_orders = filter_replied_work_orders(work_orders, connection, config)
+    sync_work_order_source(connection, work_orders, digest, config)
+    communication = config.get("communication") if isinstance(config.get("communication"), dict) else None
+    active_digest = digest if communication is not None else None
+    work_orders = filter_replied_work_orders(work_orders, connection, config, active_digest)
     pending_rows = len(work_orders)
     counts = Counter(row.handler for row in work_orders)
     validate_work_order_values(path, work_orders, config)
