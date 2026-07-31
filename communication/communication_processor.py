@@ -182,6 +182,19 @@ def validate_model_result(payload: dict[str, Any], rules: dict[str, Any]) -> Mod
     return ModelResult(status=status, text=text, missing=missing, warnings=warnings)
 
 
+def validate_model_result_matches_submission(result: ModelResult, submission: ParsedSubmission) -> None:
+    text = normalize_identifier(result.text)
+    order_id = normalize_identifier(submission.order_id)
+    customer_number = normalize_identifier(submission.customer_number)
+    if order_id and order_id not in text:
+        raise CommunicationError(f"模型回单未包含本次工单号：{submission.order_id}")
+    if customer_number and customer_number not in text:
+        raise CommunicationError(f"模型回单未包含本次客户号码：{submission.customer_number}")
+    other_numbers = {item for item in PHONE_RE.findall(result.text) if normalize_identifier(item) != customer_number}
+    if other_numbers:
+        raise CommunicationError("模型回单包含非本次客户号码：" + "、".join(sorted(other_numbers)))
+
+
 def build_model_prompt(submission: ParsedSubmission, rules: dict[str, Any], prompt_text: str) -> str:
     output_rules = rules.get("output_rules", [])
     examples = rules.get("examples", [])
@@ -273,7 +286,9 @@ def generate_deepseek_result(
         payload = json.loads(content[start:end + 1]) if start >= 0 and end >= start else {}
     except json.JSONDecodeError as exc:
         raise CommunicationError(f"DeepSeek 未返回有效 JSON：{exc}") from exc
-    return validate_model_result(payload, rules)
+    result = validate_model_result(payload, rules)
+    validate_model_result_matches_submission(result, submission)
+    return result
 
 
 def init_db(path: Path) -> sqlite3.Connection:
@@ -345,6 +360,7 @@ def reserve_submission(
     message: IncomingMessage,
     submission: ParsedSubmission,
     business_type: str = "default",
+    require_assignment_match: bool = False,
 ) -> tuple[str, bool]:
     task_id = str(uuid.uuid4())
     now = utc_now()
@@ -359,9 +375,19 @@ def reserve_submission(
             return str(existing[0]), False
 
         current = connection.execute(
-            "SELECT status, submission_task_id FROM work_order_status WHERE business_type = ? AND order_id = ?",
+            "SELECT status, submission_task_id, customer_number, source_digest "
+            "FROM work_order_status WHERE business_type = ? AND order_id = ?",
             (business_type, submission.order_id),
         ).fetchone()
+        if require_assignment_match and not current:
+            connection.rollback()
+            raise CommunicationError(f"工单 {submission.order_id} 不在功能一当前派单中，未登记回单")
+        if require_assignment_match and current and current[3] is None:
+            connection.rollback()
+            raise CommunicationError(f"工单 {submission.order_id} 尚未完成功能一派单同步，未登记回单")
+        if current and current[2] and normalize_identifier(current[2]) != normalize_identifier(submission.customer_number):
+            connection.rollback()
+            raise CommunicationError(f"工单 {submission.order_id} 的受理号码与功能一派单不一致，未登记回单")
         if current and current[0] in {"submitted", "text_ready", "needs_revision", "replied"}:
             connection.rollback()
             raise CommunicationError(f"工单 {submission.order_id} 已提交回单")

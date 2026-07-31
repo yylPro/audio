@@ -16,6 +16,27 @@ class ReminderTests(unittest.TestCase):
         self.assertFalse(app.is_supported_input(Path("~$正在编辑.xlsx")))
         self.assertFalse(app.is_supported_input(Path(".hidden.xlsx")))
 
+    def test_single_run_lock_releases_after_completion(self):
+        lock_path = Path(self.temp.name) / "state" / "work_order_reminder.lock"
+        with app.single_run_lock(lock_path):
+            self.assertTrue(lock_path.exists())
+        with app.single_run_lock(lock_path):
+            self.assertTrue(lock_path.exists())
+
+    def test_delivered_send_batch_is_detected(self):
+        connection = app.init_db(Path(self.temp.name) / "state" / "db.sqlite3")
+        batch_id = app.reserve_send_batch(connection, "file-digest", "group:test", "message-digest", "test.xlsx")
+        self.assertIsNotNone(batch_id)
+        app.update_send_batch(connection, batch_id, "delivered")
+
+        self.assertTrue(
+            app.has_delivered_send_batch(connection, "file-digest", "group:test", "message-digest")
+        )
+        self.assertFalse(
+            app.has_delivered_send_batch(connection, "file-digest", "group:test", "other-message-digest")
+        )
+        connection.close()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
@@ -220,13 +241,14 @@ class ReminderTests(unittest.TestCase):
         self.assertEqual((total, pending), (2, 1))
         self.assertEqual(counts, {"叶于琳": 1})
 
-    def test_replied_work_order_status_skips_reminder_by_order_or_customer_number(self):
+    def test_replied_work_order_status_skips_only_matching_order_id(self):
         path = Path(self.config["paths"]["inbox"]) / "投诉表格.csv"
         with path.open("w", encoding="utf-8-sig", newline="") as handle:
             writer = csv.writer(handle)
             writer.writerow(["工单流水号", "受理号码", "当前处理人", "工单状态"])
             writer.writerow(["A1234", "13800000000", "叶于琳", "待处理"])
-            writer.writerow(["A5678", "13900000000", "李四", "待处理"])
+            writer.writerow(["A5678", "13900000000", "叶于琳", "待处理"])
+            writer.writerow(["A7777", "13600000000", "叶于琳", "待处理"])
             writer.writerow(["A9999", "13700000000", "王五", "待处理"])
 
         connection = app.init_db(Path(self.config["paths"]["state_db"]))
@@ -249,11 +271,12 @@ class ReminderTests(unittest.TestCase):
         total, rows = app.collect_work_orders(path, self.config)
         filtered = app.filter_replied_work_orders(rows, connection, self.config)
         messages = app.build_detail_messages(filtered, self.config)
-        self.assertEqual(total, 3)
-        self.assertEqual([row.ticket for row in filtered], ["A9999"])
+        self.assertEqual(total, 4)
+        self.assertEqual([row.ticket for row in filtered], ["A5678", "A7777", "A9999"])
         self.assertNotIn("A1234", "\n".join(messages))
-        self.assertNotIn("A5678", "\n".join(messages))
+        self.assertIn("A5678", "\n".join(messages))
         self.assertIn("A9999", "\n".join(messages))
+        self.assertIn("A7777", "\n".join(messages))
 
         status = app.process_file(path, self.config, connection, dry_run=True)
         pending_rows = connection.execute(
@@ -262,7 +285,7 @@ class ReminderTests(unittest.TestCase):
         connection.close()
 
         self.assertEqual("preview", status)
-        self.assertEqual(1, pending_rows)
+        self.assertEqual(3, pending_rows)
 
     def test_preview_records_audit_without_skip_side_effect(self):
         path = self.make_csv()
@@ -357,6 +380,105 @@ class ReminderTests(unittest.TestCase):
         self.assertIn("new-member 今日到期 1 单", message)
         self.assertNotIn("@new-member", message)
         self.assertIn("new-member 没查到，请问是否在本群里面。", message)
+
+    @patch("work_order_reminder.subprocess.run")
+    def test_send_direct_message_uses_message_send_without_model(self, run):
+        run.return_value.returncode = 0
+        run.return_value.stderr = ""
+        run.return_value.stdout = json.dumps({"handledBy": "core", "id": "msg-1"})
+        self.config["delivery"].update(
+            {
+                "enabled": True,
+                "openclaw_cmd": "openclaw.cmd",
+                "channel": "yuanbao",
+                "account": "default",
+                "target": "group:test-group",
+            }
+        )
+
+        payload = app.send_direct_message("第一行\n第二行", 1, self.config)
+
+        command = run.call_args.args[0]
+        self.assertEqual(payload["id"], "msg-1")
+        self.assertIn("message", command)
+        self.assertIn("send", command)
+        self.assertIn("--account", command)
+        self.assertIn("第一行\n第二行", command)
+        self.assertNotIn("--model", command)
+
+    @patch("work_order_reminder.wait_for_cron")
+    @patch("work_order_reminder.create_cron")
+    @patch("work_order_reminder.send_direct_message")
+    def test_deliver_message_falls_back_to_cron(self, direct, create_cron, wait_for_cron):
+        direct.side_effect = RuntimeError("direct unavailable")
+        create_cron.return_value = "job-1"
+        wait_for_cron.return_value = {"tsIso": "2026-07-31T10:00:00+08:00"}
+        self.config["delivery"]["fallback_to_cron"] = True
+
+        job_id, entry = app.deliver_message("消息", 1, self.config)
+
+        self.assertEqual(job_id, "job-1")
+        self.assertEqual(entry["tsIso"], "2026-07-31T10:00:00+08:00")
+
+    @patch("work_order_reminder.deliver_message")
+    @patch("work_order_reminder.ensure_gateway_ready")
+    def test_process_file_resumes_after_partial_delivery(self, ensure_gateway_ready, deliver_message):
+        path = Path(self.config["paths"]["inbox"]) / "投诉表格.csv"
+        with path.open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["工单流水号", "受理号码", "当前处理人", "工单状态"])
+            writer.writerow(["A1", "13800000001", "叶于琳", "待处理"])
+            writer.writerow(["A2", "13800000002", "李四", "待处理"])
+        self.config["message"]["max_people_per_message"] = 1
+        self.config["delivery"]["enabled"] = True
+        self.config["delivery"]["openclaw_cmd"] = str(Path(__file__))
+        connection = app.init_db(Path(self.config["paths"]["state_db"]))
+        try:
+            _, rows = app.collect_work_orders(path, self.config)
+            messages = app.build_detail_messages(rows, self.config, {"叶于琳", "李四"})
+            app.record_delivery(connection, app.file_digest(path), 1, messages[0], "direct:old", "delivered")
+            deliver_message.return_value = ("direct:new", {"id": "new"})
+
+            status = app.process_file(path, self.config, connection, dry_run=False)
+
+            self.assertEqual(status, "delivered")
+            self.assertEqual(deliver_message.call_count, 1)
+            self.assertEqual(deliver_message.call_args.args[1], 2)
+            rows = connection.execute(
+                "SELECT batch_number, status FROM deliveries ORDER BY batch_number"
+            ).fetchall()
+            self.assertEqual(rows, [(1, "delivered"), (2, "delivered")])
+        finally:
+            connection.close()
+
+    @patch("work_order_reminder.deliver_message")
+    @patch("work_order_reminder.ensure_gateway_ready")
+    def test_force_resend_ignores_delivered_history(self, ensure_gateway_ready, deliver_message):
+        path = Path(self.config["paths"]["inbox"]) / "投诉表格.csv"
+        with path.open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["工单流水号", "受理号码", "当前处理人", "工单状态"])
+            writer.writerow(["A1", "13800000001", "叶于琳", "待处理"])
+        self.config["delivery"]["enabled"] = True
+        self.config["delivery"]["openclaw_cmd"] = str(Path(__file__))
+        connection = app.init_db(Path(self.config["paths"]["state_db"]))
+        try:
+            _, rows = app.collect_work_orders(path, self.config)
+            messages = app.build_detail_messages(rows, self.config, {"叶于琳"})
+            digest = app.file_digest(path)
+            app.record_delivery(connection, digest, 1, messages[0], "direct:old", "delivered")
+            batch_id = app.reserve_send_batch(connection, digest, "group:test-group", app.messages_digest(messages), path.name)
+            app.update_send_batch(connection, batch_id, "delivered")
+            deliver_message.return_value = ("direct:new", {"id": "new"})
+
+            skipped = app.process_file(path, self.config, connection, dry_run=False)
+            forced = app.process_file(path, self.config, connection, dry_run=False, force_resend=True)
+
+            self.assertEqual(skipped, "already_delivered")
+            self.assertEqual(forced, "delivered")
+            self.assertEqual(deliver_message.call_count, 1)
+        finally:
+            connection.close()
 
     def test_supported_business_file_name_is_required(self):
         path = Path(self.config["paths"]["inbox"]) / "orders.csv"

@@ -5,6 +5,7 @@ import csv
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 import sqlite3
@@ -13,16 +14,21 @@ import sys
 import tempfile
 import time
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 
 SUPPORTED_SUFFIXES = {".xlsx", ".xlsm", ".csv"}
 SCIENTIFIC_NOTATION_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?[eE][+-]?\d+$")
 MENTION_RE = re.compile(r"(?:^|\s)@(\S+?)(?=\s|$|[，。,.：:])")
 REPLIED_WORK_ORDER_STATUSES = {"replied", "已回单"}
+
+
+class ReminderRunAlreadyActive(RuntimeError):
+    """Raised when a manual and scheduled reminder run overlap."""
 
 
 @dataclass(frozen=True)
@@ -52,6 +58,43 @@ class MentionResolution:
 def load_config(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8-sig") as handle:
         return json.load(handle)
+
+
+@contextmanager
+def single_run_lock(path: Path) -> Iterator[None]:
+    """Prevent the manual CMD and scheduled task from processing inbox together."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+b")
+    locked = False
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            if not handle.read(1):
+                handle.seek(0)
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                locked = True
+            except OSError as exc:
+                raise ReminderRunAlreadyActive(
+                    "Another work-order reminder run is still active. "
+                    "Wait for it to finish before starting the manual CMD again."
+                ) from exc
+        yield
+    finally:
+        if locked and os.name == "nt":
+            import msvcrt
+
+            try:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+        handle.close()
 
 
 def normalize_header(value: Any) -> str:
@@ -607,6 +650,7 @@ def sync_work_order_source(
             """
             UPDATE work_order_status
             SET status = CASE
+                    WHEN status IN ('replied', '已回单') THEN status
                     WHEN source_digest IS NOT NULL AND source_digest <> ? THEN 'pending'
                     ELSE status END,
                 submission_task_id = CASE
@@ -625,6 +669,7 @@ def sync_work_order_source(
             ON CONFLICT(business_type, order_id) DO UPDATE SET
                 customer_number = COALESCE(excluded.customer_number, work_order_status.customer_number),
                 status = CASE
+                    WHEN work_order_status.status IN ('replied', '已回单') THEN work_order_status.status
                     WHEN work_order_status.source_digest IS NOT NULL AND work_order_status.source_digest <> excluded.source_digest
                     THEN 'pending' ELSE work_order_status.status END,
                 submission_task_id = CASE
@@ -643,15 +688,10 @@ def replied_work_order_keys(
     work_orders: Iterable[WorkOrderRow],
     config: dict[str, Any],
     source_digest: str | None = None,
-) -> tuple[set[str], set[str]]:
+) -> set[str]:
     order_ids = {normalize_identifier(row.ticket) for row in work_orders if normalize_identifier(row.ticket)}
-    customer_numbers = {
-        normalize_identifier(row.acceptance_number)
-        for row in work_orders
-        if normalize_identifier(row.acceptance_number)
-    }
-    if not order_ids and not customer_numbers:
-        return set(), set()
+    if not order_ids:
+        return set()
     communication = config.get("communication", {}) if isinstance(config.get("communication"), dict) else {}
     business_type = normalize_text(communication.get("business_type", "default")) or "default"
     statuses = {
@@ -660,27 +700,22 @@ def replied_work_order_keys(
         if normalize_text(item)
     } or REPLIED_WORK_ORDER_STATUSES
     placeholders = ",".join("?" for _ in statuses)
-    source_clause = " AND source_digest = ?" if source_digest else ""
+    # Excel exports can change after dispatch; a reply belongs to the order.
+    source_clause = ""
     params: tuple[Any, ...] = (*sorted(statuses),)
-    if source_digest:
-        params += (source_digest,)
     rows = connection.execute(
         f"""
-        SELECT order_id, customer_number FROM work_order_status
+        SELECT order_id FROM work_order_status
         WHERE status IN ({placeholders}){source_clause}
         """,
         params,
     ).fetchall()
     replied_orders: set[str] = set()
-    replied_numbers: set[str] = set()
-    for order_id, customer_number in rows:
+    for (order_id,) in rows:
         normalized_order_id = normalize_identifier(order_id)
-        normalized_customer_number = normalize_identifier(customer_number)
         if normalized_order_id in order_ids:
             replied_orders.add(normalized_order_id)
-        if normalized_customer_number in customer_numbers:
-            replied_numbers.add(normalized_customer_number)
-    return replied_orders, replied_numbers
+    return replied_orders
 
 
 def filter_replied_work_orders(
@@ -689,14 +724,13 @@ def filter_replied_work_orders(
     config: dict[str, Any],
     source_digest: str | None = None,
 ) -> list[WorkOrderRow]:
-    replied_orders, replied_numbers = replied_work_order_keys(connection, work_orders, config, source_digest)
-    if not replied_orders and not replied_numbers:
+    replied_orders = replied_work_order_keys(connection, work_orders, config, source_digest)
+    if not replied_orders:
         return work_orders
     return [
         row
         for row in work_orders
         if normalize_identifier(row.ticket) not in replied_orders
-        and normalize_identifier(row.acceptance_number) not in replied_numbers
     ]
 
 
@@ -756,6 +790,42 @@ def reserve_send_batch(
         raise
 
 
+def has_delivered_send_batch(
+    connection: sqlite3.Connection,
+    file_digest_value: str,
+    target: str,
+    message_digest_value: str,
+) -> bool:
+    row = connection.execute(
+        """
+        SELECT id FROM send_batches
+        WHERE file_digest = ? AND target = ? AND message_digest = ? AND status = 'delivered'
+        LIMIT 1
+        """,
+        (file_digest_value, target, message_digest_value),
+    ).fetchone()
+    return row is not None
+
+
+def get_delivered_delivery(
+    connection: sqlite3.Connection,
+    digest: str,
+    batch_number: int,
+    message: str,
+) -> str | None:
+    row = connection.execute(
+        """
+        SELECT cron_job_id FROM deliveries
+        WHERE digest = ? AND batch_number = ? AND message = ? AND status = 'delivered'
+        LIMIT 1
+        """,
+        (digest, batch_number, message),
+    ).fetchone()
+    if not row:
+        return None
+    return str(row[0] or "")
+
+
 def update_send_batch(
     connection: sqlite3.Connection,
     batch_id: str,
@@ -778,6 +848,79 @@ def build_cron_prompt(message: str) -> str:
         f"将下面文本中的每个{marker}替换为一个真实换行，然后原样输出。"
         "不要解释、改写、增删或调用工具，只输出还原后的催办消息：" + encoded
     )
+
+
+def parse_openclaw_json(stdout: str, label: str) -> dict[str, Any]:
+    start = stdout.find("{")
+    if start < 0:
+        raise RuntimeError(f"OpenClaw {label} returned no JSON: {stdout.strip()}")
+    payload = json.loads(stdout[start:])
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"OpenClaw {label} returned unexpected JSON: {payload!r}")
+    return payload
+
+
+def delivery_reference(payload: Any) -> str | None:
+    if isinstance(payload, dict):
+        for key in ("msgId", "messageId", "message_id", "id", "tsIso", "ts"):
+            value = payload.get(key)
+            if value not in (None, ""):
+                return str(value)
+        for value in payload.values():
+            found = delivery_reference(value)
+            if found:
+                return found
+    elif isinstance(payload, list):
+        for value in payload:
+            found = delivery_reference(value)
+            if found:
+                return found
+    elif isinstance(payload, str):
+        match = re.search(r'"(?:msgId|messageId|id)"\s*:\s*"([^"]+)"', payload)
+        if match:
+            return match.group(1)
+    return None
+
+
+def send_direct_message(message: str, batch_number: int, config: dict[str, Any]) -> dict[str, Any]:
+    delivery = config["delivery"]
+    command = [
+        delivery["openclaw_cmd"],
+        "message",
+        "send",
+        "--channel",
+        delivery.get("channel", "yuanbao"),
+    ]
+    account = normalize_text(delivery.get("account"))
+    if account:
+        command.extend(["--account", account])
+    command.extend(
+        [
+            "--target",
+            delivery["target"],
+            "--message",
+            message,
+            "--json",
+        ]
+    )
+    timeout = max(15, int(delivery.get("direct_timeout_seconds", 60)))
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(f"Timed out waiting {timeout}s for direct message send batch {batch_number}") from exc
+    if completed.returncode != 0:
+        raise RuntimeError((completed.stderr or completed.stdout).strip())
+    payload = parse_openclaw_json(completed.stdout, "message send")
+    if payload.get("error"):
+        raise RuntimeError(json.dumps(payload, ensure_ascii=False))
+    return payload
 
 
 def create_cron(message: str, batch_number: int, config: dict[str, Any]) -> str:
@@ -813,10 +956,7 @@ def create_cron(message: str, batch_number: int, config: dict[str, Any]) -> str:
     completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if completed.returncode != 0:
         raise RuntimeError((completed.stderr or completed.stdout).strip())
-    start = completed.stdout.find("{")
-    if start < 0:
-        raise RuntimeError(f"OpenClaw returned no JSON: {completed.stdout.strip()}")
-    payload = json.loads(completed.stdout[start:])
+    payload = parse_openclaw_json(completed.stdout, "cron add")
     saved_delivery = payload.get("delivery", {})
     expected_channel = delivery.get("channel", "yuanbao")
     expected_target = delivery["target"]
@@ -829,6 +969,35 @@ def create_cron(message: str, batch_number: int, config: dict[str, Any]) -> str:
     if not job_id:
         raise RuntimeError(f"OpenClaw response has no job id: {payload}")
     return str(job_id)
+
+
+def deliver_message(message: str, batch_number: int, config: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    delivery = config["delivery"]
+    method = normalize_text(delivery.get("method") or delivery.get("send_method") or "direct").casefold()
+    if method in {"direct", "message"}:
+        try:
+            payload = send_direct_message(message, batch_number, config)
+            reference = delivery_reference(payload) or f"batch-{batch_number}"
+            return f"direct:{reference}", payload
+        except Exception as direct_error:
+            if not delivery.get("fallback_to_cron", True):
+                raise
+            print(f"warning: direct send failed; falling back to cron: {direct_error}", file=sys.stderr)
+            try:
+                job_id = create_cron(message, batch_number, config)
+                print(f"scheduled cron job: {job_id}")
+                entry = wait_for_cron(job_id, config)
+                return job_id, entry
+            except Exception as cron_error:
+                raise RuntimeError(
+                    f"Direct send failed: {direct_error}; cron fallback failed: {cron_error}"
+                ) from cron_error
+    if method == "cron":
+        job_id = create_cron(message, batch_number, config)
+        print(f"scheduled cron job: {job_id}")
+        entry = wait_for_cron(job_id, config)
+        return job_id, entry
+    raise ValueError(f"Unsupported delivery method: {method!r}. Expected direct or cron.")
 
 
 def parse_iso_ms(value: str | None) -> int | None:
@@ -1039,6 +1208,24 @@ def record_import(
     connection.commit()
 
 
+def record_delivery(
+    connection: sqlite3.Connection,
+    digest: str,
+    batch_number: int,
+    message: str,
+    job_id: str | None,
+    status: str,
+    error: str | None = None,
+) -> None:
+    now = datetime.now().astimezone().isoformat(timespec="seconds")
+    connection.execute(
+        "INSERT OR REPLACE INTO deliveries (digest, batch_number, message, cron_job_id, status, created_at, error) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (digest, batch_number, message, job_id, status, now, error),
+    )
+    connection.commit()
+
+
 def move_with_timestamp(source: Path, destination: Path) -> Path:
     destination.mkdir(parents=True, exist_ok=True)
     target = destination / source.name
@@ -1047,7 +1234,13 @@ def move_with_timestamp(source: Path, destination: Path) -> Path:
     return Path(shutil.move(str(source), str(target)))
 
 
-def process_file(path: Path, config: dict[str, Any], connection: sqlite3.Connection, dry_run: bool) -> str:
+def process_file(
+    path: Path,
+    config: dict[str, Any],
+    connection: sqlite3.Connection,
+    dry_run: bool,
+    force_resend: bool = False,
+) -> str:
     ensure_input_file_ready(path, config)
     digest = file_digest(path)
     total_rows, work_orders = collect_work_orders(path, config)
@@ -1075,7 +1268,15 @@ def process_file(path: Path, config: dict[str, Any], connection: sqlite3.Connect
     validate_message_limits(messages, config)
     should_deliver = bool(messages and not dry_run and config["delivery"].get("enabled", False))
     batch_id: str | None = None
-    if should_deliver:
+    if should_deliver and not force_resend:
+        if has_delivered_send_batch(
+            connection,
+            digest,
+            config["delivery"]["target"],
+            messages_digest(messages),
+        ):
+            print(f"already delivered: {path.name}")
+            return "already_delivered"
         batch_id = reserve_send_batch(
             connection,
             digest,
@@ -1100,14 +1301,19 @@ def process_file(path: Path, config: dict[str, Any], connection: sqlite3.Connect
             if not should_deliver:
                 deliveries.append((batch_number, message, None, "preview", None))
                 continue
+            delivered_job_id = None if force_resend else get_delivered_delivery(connection, digest, batch_number, message)
+            if delivered_job_id is not None:
+                print(f"already delivered batch {batch_number}; skip sending")
+                deliveries.append((batch_number, message, delivered_job_id, "delivered", None))
+                continue
             try:
-                job_id = create_cron(message, batch_number, config)
-                print(f"scheduled cron job: {job_id}")
-                entry = wait_for_cron(job_id, config)
+                job_id, entry = deliver_message(message, batch_number, config)
                 deliveries.append((batch_number, message, job_id, "delivered", None))
+                record_delivery(connection, digest, batch_number, message, job_id, "delivered")
                 print(f"delivered: {entry.get('tsIso', entry.get('ts'))}")
             except Exception as exc:
                 deliveries.append((batch_number, message, None, "error", str(exc)))
+                record_delivery(connection, digest, batch_number, message, None, "error", str(exc))
                 raise
 
         status = "no_pending" if not messages else ("preview" if not should_deliver else "delivered")
@@ -1127,13 +1333,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--file", type=Path, help="Process one Excel/CSV file instead of scanning inbox.")
     parser.add_argument("--send", action="store_true", help="Enable delivery for this run (config must also enable it).")
     parser.add_argument("--keep", action="store_true", help="Do not move processed inbox files.")
+    parser.add_argument("--force-resend", action="store_true", help="Send even if the same file/message/target was already delivered.")
     return parser.parse_args()
 
 
-def main() -> int:
-    args = parse_args()
-    config = load_config(args.config.resolve())
-    paths = {key: Path(value) for key, value in config["paths"].items()}
+def run_reminder(args: argparse.Namespace, config: dict[str, Any], paths: dict[str, Path]) -> int:
     for key in ("inbox", "archive", "failed"):
         paths[key].mkdir(parents=True, exist_ok=True)
     connection = init_db(paths["state_db"])
@@ -1153,7 +1357,7 @@ def main() -> int:
     failures = 0
     for path in candidates:
         try:
-            status = process_file(path, config, connection, dry_run)
+            status = process_file(path, config, connection, dry_run, force_resend=args.force_resend)
             print(status)
             if not dry_run and not args.file and not args.keep and not status.startswith("SKIP"):
                 move_with_timestamp(path, paths["archive"])
@@ -1168,6 +1372,19 @@ def main() -> int:
             print(f"ERROR {path.name}: {exc}", file=sys.stderr)
     connection.close()
     return 1 if failures else 0
+
+
+def main() -> int:
+    args = parse_args()
+    config = load_config(args.config.resolve())
+    paths = {key: Path(value) for key, value in config["paths"].items()}
+    lock_path = paths["state_db"].with_name("work_order_reminder.lock")
+    try:
+        with single_run_lock(lock_path):
+            return run_reminder(args, config, paths)
+    except ReminderRunAlreadyActive as exc:
+        print(f"SKIP: {exc}", file=sys.stderr)
+        return 0
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@
 | 功能 | 入口 | 本地处理 | 模型/服务 | 当前状态 |
 |---|---|---|---|---|
 | 功能一：Excel工单催办 | `inbox`目录 | Python读取、过滤、分组、计数 | DeepSeek仅原样转发 | 已实现 |
-| 功能二：回单整理 | 群内 `@Bot #回单整理` | 解析工单号/客户号码、写入已回单状态 | DeepSeek Chat | 框架已建立，输出规则待确认 |
+| 功能二：回单整理 | 群内 `@Bot #回单整理` | 解析工单号/客户号码、生成双版本、写入已回单状态 | DeepSeek Chat | 入口已接入 |
 | 功能三：录音转写与质检 | 群内音频文件或`audio-inbox` | 下载、转写任务、结果归档 | 阿里 FunASR + DeepSeek Chat | 已初步可用 |
 
 ## DeepSeek官方插件
@@ -59,17 +59,21 @@ cd "D:\代维\工单提醒"
 & "C:\Users\14137\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" .\work_order_reminder.py --config .\config.json --send
 ```
 
+功能一保留两条入口：双击 `运行工单催办.cmd` 可随时手动预览或发送；执行 `.\install_scheduled_reminders.ps1 -IntervalMinutes 5` 可安装后台定时任务。两条入口共用运行锁，重叠时后启动的一方会跳过本轮，避免并发发送。手动发送会强制发出本轮文件并默认保留源表；后台定时才会跳过已经送达过的同一批消息，并默认保留源表。
+
+功能一的投递默认走 `openclaw message send` 直发元宝派，不经过模型；只有直发失败且 `fallback_to_cron=true` 时才回退到 cron。每条消息批次会单独记录，部分失败后重试只补发未成功批次。
+
 ## 功能二现状
 
-功能二当前改为“回单整理”框架。入口目标是：
+功能二当前已接入“回单整理”群入口：
 
 ```text
 @Bot #回单整理 工单号：... 客户号码：... 口语描述...
 ```
 
-处理器会先解析工单号、客户号码和口语描述；待 DeepSeek 按业务输出规则整理成功后，把共享状态表中的对应工单设置为 `replied`。功能一下一轮催单会按工单号或客户号码跳过这些已回单工单。
+处理器会先解析工单号、客户号码和口语描述，同时生成 Python 标准版和 DeepSeek 智能版。DeepSeek 按业务输出规则整理并校验成功后，把共享状态表中的对应工单设置为 `replied`。功能一下一轮催单会按工单号或客户号码跳过这些已回单工单。
 
-当前仍等待真实输入输出样例来确认标准状态、固定格式、禁用表达和缺失字段处理方式。
+入口补丁为 `patches/yuanbao/communication-ingress.js`，安装脚本为 `install_yuanbao_communication_ingress_patch.py`。修改补丁后需要重新运行安装脚本并重启 Gateway。
 
 ## 功能三现状
 

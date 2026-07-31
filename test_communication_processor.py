@@ -14,6 +14,7 @@ from communication.communication_processor import (
     reserve_submission,
     save_model_result,
     validate_model_result,
+    validate_model_result_matches_submission,
 )
 
 
@@ -85,6 +86,21 @@ class CommunicationProcessorTests(unittest.TestCase):
         with self.assertRaisesRegex(CommunicationError, "禁用表达"):
             validate_model_result(
                 {"status": "已联系", "text": "问题应该已经解决。", "missing": [], "warnings": []}, RULES
+            )
+
+    def test_model_result_must_match_current_order_and_customer_number(self):
+        submission = parse_submission(
+            "#回单整理 工单号：A5678 客户号码：13900000000 口语描述：已经联系到用户", RULES
+        )
+        with self.assertRaisesRegex(CommunicationError, "本次客户号码"):
+            validate_model_result_matches_submission(
+                ModelResult("已联系", "工单号：A5678；客户号码：13800000000；沟通内容：已联系。", [], []),
+                submission,
+            )
+        with self.assertRaisesRegex(CommunicationError, "本次工单号"):
+            validate_model_result_matches_submission(
+                ModelResult("已联系", "工单号：A1234；客户号码：13900000000；沟通内容：已联系。", [], []),
+                submission,
             )
 
     def test_duplicate_message_is_idempotent(self):

@@ -63,6 +63,9 @@
   "delivery": {
     "enabled": false,
     "openclaw_cmd": "D:\\OpenClaw\\openclaw.cmd",
+    "method": "direct",
+    "fallback_to_cron": true,
+    "direct_timeout_seconds": 60,
     "model": "deepseek/deepseek-chat",
     "channel": "yuanbao",
     "account": "default",
@@ -81,6 +84,7 @@
     "processor": "D:\\代维\\工单提醒\\communication\\communication_processor.py",
     "rules": "D:\\代维\\工单提醒\\communication\\communication_rules.json",
     "prompt": "D:\\代维\\工单提醒\\communication\\prompts\\communication_record.md",
+    "env_file": "D:\\代维\\工单提醒\\audio_quality.env",
     "model": "deepseek/deepseek-chat",
     "history_messages": 0,
     "business_type": "default",

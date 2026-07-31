@@ -22,14 +22,16 @@ echo ========================================
 echo        Yuanbao Work Order Reminder
 echo ========================================
 echo [1] Preview only
-echo [2] Send to Yuanbao group
-echo [3] Exit
+echo [2] Send all files to Yuanbao group and keep files
+echo [3] Send all files to Yuanbao group and archive files
+echo [4] Exit
 echo.
-set /p "CHOICE=Choose 1, 2 or 3: "
+set /p "CHOICE=Choose 1, 2, 3 or 4: "
 
 if "%CHOICE%"=="1" goto :preview
 if "%CHOICE%"=="2" goto :send
-if "%CHOICE%"=="3" goto :done
+if "%CHOICE%"=="3" goto :send_keep
+if "%CHOICE%"=="4" goto :done
 echo [ERROR] Invalid option.
 goto :failed
 
@@ -41,6 +43,13 @@ set "RESULT=%ERRORLEVEL%"
 goto :result
 
 :send
+set "KEEP_ARGS=--keep"
+goto :send_start
+
+:send_keep
+set "KEEP_ARGS="
+
+:send_start
 echo.
 call :find_openclaw
 if errorlevel 1 goto :failed
@@ -52,7 +61,7 @@ if errorlevel 1 (
     timeout /t 5 /nobreak >nul
 )
 echo Sending. Keep this window open...
-"%PYTHON_EXE%" ".\work_order_reminder.py" --config ".\config.json" %TARGET_ARGS% --send --keep
+"%PYTHON_EXE%" ".\work_order_reminder.py" --config ".\config.json" %TARGET_ARGS% --send --force-resend %KEEP_ARGS%
 set "RESULT=%ERRORLEVEL%"
 goto :result
 
@@ -69,6 +78,10 @@ goto :done
 
 :find_python
 set "PYTHON_EXE="
+if exist "%~dp0audio_quality_runtime\.venv\Scripts\python.exe" (
+    set "PYTHON_EXE=%~dp0audio_quality_runtime\.venv\Scripts\python.exe"
+    exit /b 0
+)
 if exist "%USERPROFILE%\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" (
     set "PYTHON_EXE=%USERPROFILE%\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
     exit /b 0

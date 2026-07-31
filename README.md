@@ -3,12 +3,12 @@
 项目分为三个清晰功能：
 
 1. **功能一：Excel工单催办**：已经实现。读取业务 Excel、排除完成状态、按当前处理人生成原生 `@` 催办消息。
-2. **功能二：回单整理**：框架已建立，使用 `@Bot #回单整理 ...`；业务输出规则待样例确认后启用。
+2. **功能二：回单整理**：入口已接入。群内原生 `@Bot #回单整理 ...` 会调用本地处理器，生成 Python 标准版和 DeepSeek 智能版；DeepSeek 校验成功后写入 `replied`。
 3. **功能三：录音转写与质检**：已经初步可用，当前主链路是阿里 FunASR + DeepSeek；独立说明见 `audio_quality/README.md`。
 
 完整部署状态和验收命令见 `THREE_CHANNELS.md`，永久规则见 `AGENT_RULES_WORK_ORDER.md`。
 
-日常使用无需输入 Python 命令，直接双击 `运行工单催办.cmd`，选择预览或正式发送。也可以把单个 `.xlsx` 文件拖到该 CMD 上，只处理该文件。
+功能一保留两种运行路径：直接双击 `运行工单催办.cmd` 可随时预览或发送；运行 `install_scheduled_reminders.ps1` 可安装每 5 分钟扫描一次的后台定时任务。两者共用运行锁，撞车时后启动的一方会跳过本轮，不会并发重复发送。手动发送会强制把本轮文件全部发出；后台定时才会跳过已经送达过的同一批消息。
 
 Excel 数据不会发送给模型。只有 Python 已经生成的最终催办文本会交给指定模型原样转发。
 
@@ -51,7 +51,7 @@ python work_order_reminder.py --config config.json --file "D:\\export\\orders.xl
 
 ## 开启投递
 
-先确认 OpenClaw 已注册并认证 `deepseek/deepseek-chat`。然后将配置中的：
+先确认 OpenClaw Gateway 和元宝派通道可用。然后将配置中的：
 
 ```json
 "delivery": {
@@ -65,7 +65,7 @@ python work_order_reminder.py --config config.json --file "D:\\export\\orders.xl
 python work_order_reminder.py --config config.json --send
 ```
 
-必须同时满足配置 `enabled=true` 和命令行 `--send` 才会投递，防止误发。每个消息包只创建一个模型任务。
+必须同时满足配置 `enabled=true` 和命令行 `--send` 才会投递，防止误发。功能一默认使用 `openclaw message send` 直发固定催办文本，不再依赖模型复述；只有直发失败且 `fallback_to_cron=true` 时才回退到 cron。
 
 ## 消息示例
 
@@ -88,11 +88,12 @@ python work_order_reminder.py --config config.json --send
 
 ## 发送确认与文件流转
 
-- SQLite 记录文件哈希、消息内容、cron job 和投递结果用于审计，不作为历史文件跳过依据。
+- SQLite 记录文件哈希、消息内容、投递引用和投递结果用于审计；后台定时任务遇到相同文件、相同目标群、相同消息内容已成功送达时会跳过，避免重复发同一批。
 - 只阻止同一文件、同一目标群、同一消息内容仍处于 `sending` 状态时再次发送，避免重复点击产生并发投递。
 - 默认成功后移入 `archive`，失败移入 `failed`。
 - 预览模式永不移动文件；正式投递时可用 `--keep` 禁止移动。
-- 正式发送会等待 cron 执行结果；`status=ok` 且 `deliveryStatus=delivered` 才视为脚本侧送达成功。最终仍应以群内实际收到和原生 AT 实际生效为验收标准。
+- 如果某个文件被拆成多条消息，已成功送达的批次会逐条落库；后续重试只补发未成功的批次。
+- 直发返回成功即视为脚本侧送达成功；cron 回退时仍会等待执行结果。最终仍应以群内实际收到和原生 AT 实际生效为验收标准。
 
 ## 成员映射
 
@@ -106,10 +107,13 @@ python work_order_reminder.py --config config.json --send
 
 ## Windows 任务计划程序
 
-验证完成后，可每 5 分钟运行：
+功能一支持两种并行保留的入口：
+
+1. 手动：双击 `运行工单催办.cmd`。正式发送会强制发送本轮文件，即使同一内容之前发过；默认保留 `inbox` 文件，需要归档时选择归档发送选项。
+2. 定时：执行：
 
 ```powershell
-python "D:\\WorkOrderAssistant\\work_order_reminder.py" --config "D:\\WorkOrderAssistant\\config.json" --send
+.\install_scheduled_reminders.ps1 -IntervalMinutes 5
 ```
 
-第一版建议先人工运行预览，再开启任务计划程序。
+定时任务运行日志位于 `state\logs\work_order_reminder_scheduled.log`。手动和定时任务可以同时保留，但不会同时处理同一批 `inbox` 文件；定时任务默认保留源文件，只用送达记录防重复。

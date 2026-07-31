@@ -26,7 +26,8 @@
 
 - `communication_rules.json`：可维护业务规则。
 - `prompts/communication_record.md`：DeepSeek 精简提示词。
-- 根目录 `config.json` 的 `communication`：运行参数，当前 `enabled=false`。
+- 根目录 `config.json` 的 `communication`：运行参数，当前 `enabled=true`。
+- `communication.env_file`：可复用 `audio_quality.env` 中的 `DEEPSEEK_API_KEY`。
 
 `allowed_contact_statuses` 为空是故意的安全锁。业务规则未补齐时，处理器会拒绝模型结果。
 当前规则已根据 `回单整理.xlsx` 中的样例启用；后续样例只用于优化，不会阻止当前规则执行。
@@ -84,4 +85,16 @@ python communication\communication_processor.py init-db --db state\assistant_v2.
 python communication\communication_processor.py prompt --text "@Bot #回单整理 18376697569，20260703174229X749589475，我处已于2026年7月11日18:24分电话13457142185联系客户..."
 ```
 
-`process` 命令接收事件 JSON 和预生成的模型响应 JSON，用于业务规则确定后的端到端离线测试。当前占位规则会阻止正式模型结果通过。
+`process` 命令接收事件 JSON 和预生成的模型响应 JSON，用于端到端离线测试。
+
+## 元宝入口
+
+功能二已提供确定性入站入口：
+
+```text
+patches/yuanbao/communication-ingress.js
+communication/inbound_adapter.py
+install_yuanbao_communication_ingress_patch.py
+```
+
+安装补丁后，群内原生 AT Bot 并发送 `#回单整理` 会直接调用本地处理器；DeepSeek 生成和校验成功后才写入 `replied`。
