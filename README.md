@@ -6,6 +6,20 @@
 2. **功能二：回单整理**：入口已接入。群内原生 `@Bot #回单整理 ...` 会调用本地处理器，生成 Python 标准版和 DeepSeek 智能版；DeepSeek 校验成功后写入 `replied`。
 3. **功能三：录音转写与质检**：已经初步可用，当前主链路是阿里 FunASR + DeepSeek；独立说明见 `audio_quality/README.md`。
 
+## 统一启动入口
+
+日常使用请运行 `工单助手控制台.ps1`，它集中提供工单催办、两个自动运行任务、补丁安装和发送审计入口。原有 `.ps1` 和 `.cmd` 脚本仍保留，已被现有计划任务或快捷方式引用，不建议删除。
+
+```powershell
+.\工单助手控制台.ps1
+```
+
+也可直接执行某一操作，例如：
+
+```powershell
+.\工单助手控制台.ps1 -Action InstallReminderSchedule -IntervalMinutes 5
+```
+
 完整部署状态和验收命令见 `THREE_CHANNELS.md`，永久规则见 `AGENT_RULES_WORK_ORDER.md`。
 
 功能一保留两种运行路径：直接双击 `运行工单催办.cmd` 可随时预览或发送；运行 `install_scheduled_reminders.ps1` 可安装每 5 分钟扫描一次的后台定时任务。两者共用运行锁，撞车时后启动的一方会跳过本轮，不会并发重复发送。手动发送会强制把本轮文件全部发出；后台定时才会跳过已经送达过的同一批消息。
