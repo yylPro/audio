@@ -65,6 +65,15 @@ def normalize_text(value: Any) -> str:
     return "" if value is None else " ".join(str(value).strip().split())
 
 
+def clean_record_text(value: Any) -> str:
+    """Conservatively clean model text without changing business facts."""
+    text = "" if value is None else str(value).replace("\r\n", "\n").strip()
+    text = re.sub(r"^\s*```(?:json|text|markdown)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```\s*$", "", text)
+    lines = [" ".join(line.split()) for line in text.split("\n")]
+    return "\n".join(line for line in lines if line).strip()
+
+
 def normalize_identifier(value: Any) -> str:
     return normalize_text(value).replace(" ", "").replace("-", "")
 
@@ -156,7 +165,7 @@ def validate_model_result(payload: dict[str, Any], rules: dict[str, Any]) -> Mod
         raise CommunicationError("业务规则尚未配置：allowed_contact_statuses 为空")
 
     status = normalize_text(payload.get("status"))
-    text = normalize_text(payload.get("text"))
+    text = clean_record_text(payload.get("text"))
     missing = payload.get("missing", [])
     warnings = payload.get("warnings", [])
     if status not in statuses:
@@ -581,11 +590,11 @@ def format_dual_reply(order_id: str, python_result: ModelResult, deepseek_result
             "",
             "【Python标准版】",
             f"回单状态：{python_result.status}",
-            python_result.text,
+            clean_record_text(python_result.text),
             "",
             "【DeepSeek智能版】",
             f"回单状态：{deepseek_result.status}",
-            deepseek_result.text,
+            clean_record_text(deepseek_result.text),
             "",
             "以上两版均依据同一回单规则生成，请对比确认。",
         ]

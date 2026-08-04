@@ -15,6 +15,7 @@ from communication.communication_processor import (
     save_model_result,
     validate_model_result,
     validate_model_result_matches_submission,
+    clean_record_text,
 )
 
 
@@ -29,6 +30,14 @@ RULES = {
 
 
 class CommunicationProcessorTests(unittest.TestCase):
+    def test_clean_record_text_only_removes_markdown_wrappers(self):
+        value = "```text\n2026-07-08 10:20用10086外呼13800000000，处理方案：已记录。\n客户态度：满意。\n```"
+        cleaned = clean_record_text(value)
+        self.assertIn("2026-07-08", cleaned)
+        self.assertIn("13800000000", cleaned)
+        self.assertIn("处理方案：已记录", cleaned)
+        self.assertNotIn("```", cleaned)
+
     def test_parse_submission(self):
         parsed = parse_submission(
             "@Bot #回单整理\n工单号：202607240001\n客户号码：13800000000\n口语描述：用户说明天下午可以联系", RULES
