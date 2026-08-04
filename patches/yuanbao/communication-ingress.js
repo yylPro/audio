@@ -48,9 +48,20 @@ function runIngress(event) {
     });
 }
 
+async function sendReply(ctx, reply) {
+    // Use Yuanbao's normal queue so long dual-output replies are split at the
+    // channel limit (the direct sender path can be truncated by the server).
+    if (ctx.queueSession?.push && ctx.queueSession?.flush) {
+        await ctx.queueSession.push({ type: "text", text: reply });
+        await ctx.queueSession.flush();
+        return;
+    }
+    await ctx.sender.sendText(reply);
+}
+
 export const communicationIngress = {
     name: "communication-ingress",
-    when: ctx => ctx.isGroup && ctx.rawBody.includes(TRIGGER),
+    when: ctx => ctx.isGroup && typeof ctx.rawBody === "string" && ctx.rawBody.includes(TRIGGER),
     handler: async ctx => {
         const event = {
             message_id: ctx.raw.msg_id ?? String(ctx.raw.msg_seq ?? ""),
@@ -58,7 +69,11 @@ export const communicationIngress = {
             sender_user_id: ctx.fromAccount,
             sender_name: ctx.senderNickname ?? "",
             text: ctx.rawBody,
-            is_at_bot: ctx.isAtBot,
+            // isAtBot is populated by extract-content. Keep the mention list
+            // as a compatibility fallback for plugin builds that expose only
+            // structured mentions at this stage.
+            is_at_bot: Boolean(ctx.isAtBot ||
+                ctx.mentions?.some(item => item?.userId && item.userId === ctx.account?.botId)),
         };
         let reply;
         try {
@@ -80,7 +95,7 @@ export const communicationIngress = {
             ctx.log.error("[communication-ingress] sender is unavailable");
             return;
         }
-        await ctx.sender.sendText(reply);
+        await sendReply(ctx, reply);
         ctx.statusSink?.({ lastOutboundAt: Date.now() });
     },
 };

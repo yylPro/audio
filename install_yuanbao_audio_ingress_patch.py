@@ -9,6 +9,8 @@ from pathlib import Path
 
 PROJECTS = Path(r"D:\OpenClaw\state\npm\projects")
 SOURCE = Path(r"D:\代维\工单提醒\patches\yuanbao\audio-quality-ingress.js")
+SOUND_SOURCE = Path(r"D:\代维\工单提醒\patches\yuanbao\sound-media-handler.js")
+ACTIONS_SOURCE = Path(r"D:\代维\工单提醒\patches\yuanbao\message-actions.js")
 SUPPORTED_VERSIONS = {"2.15.0", "2.17.0"}
 IMPORT_LINE = 'import { audioQualityIngress } from "./middlewares/audio-quality-ingress.js";'
 
@@ -29,6 +31,8 @@ def patch_package(package: Path) -> None:
         raise RuntimeError(f"不支持的元宝插件版本 {version}：{package}")
     create_file = package / "dist/src/business/pipeline/create.js"
     middleware_file = package / "dist/src/business/pipeline/middlewares/audio-quality-ingress.js"
+    sound_file = package / "dist/src/business/messaging/handlers/sound.js"
+    actions_file = package / "dist/src/business/actions/index.js"
     original = create_file.read_text(encoding="utf-8")
     updated = original
     if IMPORT_LINE not in updated:
@@ -50,9 +54,17 @@ def patch_package(package: Path) -> None:
     if middleware_file.exists() and middleware_file.read_bytes() != SOURCE.read_bytes():
         shutil.copy2(middleware_file, middleware_file.with_name(f"audio-quality-ingress.js.before-{timestamp}.bak"))
     shutil.copy2(SOURCE, middleware_file)
+    if sound_file.exists() and sound_file.read_bytes() != SOUND_SOURCE.read_bytes():
+        shutil.copy2(sound_file, sound_file.with_name(f"sound.js.before-audio-media-{timestamp}.bak"))
+    shutil.copy2(SOUND_SOURCE, sound_file)
+    if actions_file.exists() and actions_file.read_bytes() != ACTIONS_SOURCE.read_bytes():
+        shutil.copy2(actions_file, actions_file.with_name(f"index.js.before-gateway-send-{timestamp}.bak"))
+    shutil.copy2(ACTIONS_SOURCE, actions_file)
     node = Path(r"D:\Node\node.exe")
     subprocess.run([str(node), "--check", str(create_file)], check=True)
     subprocess.run([str(node), "--check", str(middleware_file)], check=True)
+    subprocess.run([str(node), "--check", str(sound_file)], check=True)
+    subprocess.run([str(node), "--check", str(actions_file)], check=True)
     print(f"patched {package} ({version})")
 
 

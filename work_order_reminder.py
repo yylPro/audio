@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import hashlib
 import json
@@ -853,10 +854,24 @@ def build_cron_prompt(message: str) -> str:
 
 
 def parse_openclaw_json(stdout: str, label: str) -> dict[str, Any]:
-    start = stdout.find("{")
-    if start < 0:
-        raise RuntimeError(f"OpenClaw {label} returned no JSON: {stdout.strip()}")
-    payload = json.loads(stdout[start:])
+    text = (stdout or "").strip()
+    start = text.find("{")
+    if start >= 0:
+        try:
+            # OpenClaw may prepend informational lines; decode one JSON value
+            # rather than requiring the entire stdout to be JSON.
+            payload, _ = json.JSONDecoder().raw_decode(text[start:])
+        except json.JSONDecodeError:
+            payload = None
+    else:
+        payload = None
+    if payload is None:
+        # Older/plugin-backed OpenClaw versions return a successful plain-text
+        # acknowledgement even when --json is supplied.
+        match = re.search(r"(?:message\s*id|msg(?:sage)?id)\s*:\s*([A-Za-z0-9_-]+)", text, re.I)
+        if re.search(r"\bsent\s+via\s+yuanbao\b", text, re.I) and match:
+            return {"action": "send", "handledBy": "plugin", "messageId": match.group(1), "raw": text}
+        raise RuntimeError(f"OpenClaw {label} returned no JSON: {text}")
     if not isinstance(payload, dict):
         raise RuntimeError(f"OpenClaw {label} returned unexpected JSON: {payload!r}")
     return payload
@@ -884,10 +899,58 @@ def delivery_reference(payload: Any) -> str | None:
     return None
 
 
+def openclaw_cli_invocation(configured_command: str, *arguments: str) -> tuple[list[str], dict[str, str] | None]:
+    """Build a safe OpenClaw invocation for arbitrary (including multiline) text.
+
+    On Windows, passing a newline as an argument to an ``.cmd`` wrapper lets
+    ``cmd.exe`` treat the newline as a command separator.  The message is then
+    silently truncated at the first line before OpenClaw sees it.  Invoke the
+    Node entrypoint directly for message sends so argv preserves the text.
+    """
+    command_path = Path(configured_command)
+    if command_path.suffix.casefold() != ".cmd":
+        return [configured_command, *arguments], None
+    openclaw_home = command_path.parent
+    node = openclaw_home.parent / "Node" / "node.exe"
+    entrypoint = openclaw_home / "npm-global" / "node_modules" / "openclaw" / "openclaw.mjs"
+    if not node.is_file() or not entrypoint.is_file():
+        # Keep the configured command as a fallback for non-standard installs.
+        return [configured_command, *arguments], None
+    env = os.environ.copy()
+    env.update(
+        {
+            "OPENCLAW_HOME": str(openclaw_home),
+            "OPENCLAW_STATE_DIR": str(openclaw_home / "state"),
+            "NPM_CONFIG_PREFIX": str(openclaw_home / "npm-global"),
+        }
+    )
+    # Node on this installation decodes non-ASCII command-line arguments via
+    # the active Windows code page. Carry the message as base64 in the
+    # environment and restore it inside a tiny Node bridge.
+    args = list(arguments)
+    try:
+        message_index = args.index("--message") + 1
+        message = args[message_index]
+    except (ValueError, IndexError):
+        return [str(node), str(entrypoint), *arguments], env
+    args[message_index] = "__OPENCLAW_MESSAGE_FROM_ENV__"
+    env["OPENCLAW_MESSAGE_B64"] = base64.b64encode(message.encode("utf-8")).decode("ascii")
+    env["OPENCLAW_ARGS_JSON"] = json.dumps(args, ensure_ascii=True)
+    env["OPENCLAW_ENTRYPOINT"] = str(entrypoint)
+    bridge = (
+        "import {pathToFileURL} from 'node:url';"
+        "const a=JSON.parse(process.env.OPENCLAW_ARGS_JSON);"
+        "const i=a.indexOf('--message');"
+        "a[i+1]=Buffer.from(process.env.OPENCLAW_MESSAGE_B64,'base64').toString('utf8');"
+        "process.argv=[process.execPath,process.env.OPENCLAW_ENTRYPOINT,...a];"
+        "import(pathToFileURL(process.env.OPENCLAW_ENTRYPOINT).href);"
+    )
+    return [str(node), "-e", bridge], env
+
+
 def send_direct_message(message: str, batch_number: int, config: dict[str, Any]) -> dict[str, Any]:
     delivery = config["delivery"]
-    command = [
-        delivery["openclaw_cmd"],
+    command_args = [
         "message",
         "send",
         "--channel",
@@ -895,8 +958,8 @@ def send_direct_message(message: str, batch_number: int, config: dict[str, Any])
     ]
     account = normalize_text(delivery.get("account"))
     if account:
-        command.extend(["--account", account])
-    command.extend(
+        command_args.extend(["--account", account])
+    command_args.extend(
         [
             "--target",
             delivery["target"],
@@ -905,6 +968,7 @@ def send_direct_message(message: str, batch_number: int, config: dict[str, Any])
             "--json",
         ]
     )
+    command, command_env = openclaw_cli_invocation(delivery["openclaw_cmd"], *command_args)
     timeout = max(15, int(delivery.get("direct_timeout_seconds", 60)))
     try:
         completed = subprocess.run(
@@ -913,6 +977,7 @@ def send_direct_message(message: str, batch_number: int, config: dict[str, Any])
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=command_env,
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:

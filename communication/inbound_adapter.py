@@ -139,6 +139,11 @@ def handle_event(event: dict[str, Any], config: dict[str, Any]) -> dict[str, Any
 
     connection = init_db(database_path)
     try:
+        previous = connection.execute(
+            "SELECT status FROM work_order_status WHERE business_type = ? AND order_id = ?",
+            (business_type, submission.order_id),
+        ).fetchone()
+        previously_replied = bool(previous and previous[0] in {"replied", "text_ready", "needs_revision"})
         task_id, created = reserve_submission(
             connection,
             message,
@@ -191,13 +196,16 @@ def handle_event(event: dict[str, Any], config: dict[str, Any]) -> dict[str, Any
     finally:
         connection.close()
 
+    reply = format_dual_reply(submission.order_id, python_result, deepseek_result)
+    if previously_replied:
+        reply = "【提示】该工单此前已经登记过回单，本次按最新消息重新整理。\n\n" + reply
     return {
         "handled": True,
         "ok": True,
         "created": True,
         "task_id": task_id,
         "status": "replied",
-        "reply": format_dual_reply(submission.order_id, python_result, deepseek_result),
+        "reply": reply,
     }
 
 

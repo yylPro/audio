@@ -182,15 +182,28 @@ def validate_model_result(payload: dict[str, Any], rules: dict[str, Any]) -> Mod
     return ModelResult(status=status, text=text, missing=missing, warnings=warnings)
 
 
-def validate_model_result_matches_submission(result: ModelResult, submission: ParsedSubmission) -> None:
+def validate_model_result_matches_submission(
+    result: ModelResult,
+    submission: ParsedSubmission,
+    *,
+    require_identifiers: bool = True,
+) -> None:
     text = normalize_identifier(result.text)
     order_id = normalize_identifier(submission.order_id)
     customer_number = normalize_identifier(submission.customer_number)
-    if order_id and order_id not in text:
+    if require_identifiers and order_id and order_id not in text:
         raise CommunicationError(f"模型回单未包含本次工单号：{submission.order_id}")
-    if customer_number and customer_number not in text:
+    if require_identifiers and customer_number and customer_number not in text:
         raise CommunicationError(f"模型回单未包含本次客户号码：{submission.customer_number}")
-    other_numbers = {item for item in PHONE_RE.findall(result.text) if normalize_identifier(item) != customer_number}
+    # A call-back number is expected in many records. Only reject numbers that
+    # were not present in the current submission, which still blocks leakage
+    # from another task without rejecting an explicitly supplied outbound line.
+    allowed_numbers = {customer_number}
+    allowed_numbers.update(normalize_identifier(item) for item in PHONE_RE.findall(submission.raw_content))
+    other_numbers = {
+        item for item in PHONE_RE.findall(result.text)
+        if normalize_identifier(item) not in allowed_numbers
+    }
     if other_numbers:
         raise CommunicationError("模型回单包含非本次客户号码：" + "、".join(sorted(other_numbers)))
 
@@ -231,14 +244,26 @@ def build_python_result(submission: ParsedSubmission, rules: dict[str, Any]) -> 
         status = "需跟进"
 
     missing = []
-    if not re.search(r"\d{4}年\d{1,2}月\d{1,2}日|\d{4}-\d{1,2}-\d{1,2}", content):
+    if not re.search(r"\d{4}年\d{1,2}月\d{1,2}日|\d{4}-\d{1,2}-\d{1,2}|\d{1,2}月\d{1,2}日", content):
         missing.append("联系日期时间")
-    if not re.search(r"外呼|拨打|电话\s*\d{7,12}|联系号码", content):
+    if not re.search(r"外呼|拨打|电话\s*\d{7,12}|联系号码", content) and not any(
+        normalize_identifier(item) != submission.customer_number for item in PHONE_RE.findall(content)
+    ):
         missing.append("外呼号码")
+    phones = [item for item in PHONE_RE.findall(content) if normalize_identifier(item) != submission.customer_number]
+    outbound = phones[0] if phones else "未提供"
+    date_match = re.search(r"(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日", content)
+    time_match = re.search(r"(\d{1,2})[:：](\d{2})", content)
+    if date_match:
+        year = int(date_match.group(1) or datetime.now().year)
+        date_text = f"{year:04d}-{int(date_match.group(2)):02d}-{int(date_match.group(3)):02d}"
+    else:
+        date_text = "日期未提供"
+    time_text = f"{int(time_match.group(1))}时{time_match.group(2)}分" if time_match else "时间未提供"
     text = (
-        f"工单号：{submission.order_id}；客户号码：{submission.customer_number}；"
-        f"联系日期时间：未提供；外呼号码：未提供；沟通内容：{content}"
-        f"（处理方案：根据原始描述执行后续处理），客户态度：根据原始描述记录。"
+        f"{date_text} {time_text}用10086外呼{outbound}号码，"
+        f"沟通内容：{content}（处理方案：根据原始描述执行后续处理），"
+        "客户态度：根据原始描述记录。"
     )
     return ModelResult(status=status, text=text, missing=missing, warnings=["Python标准版未补充原文未提供的联系时间和外呼号码"])
 
@@ -287,7 +312,7 @@ def generate_deepseek_result(
     except json.JSONDecodeError as exc:
         raise CommunicationError(f"DeepSeek 未返回有效 JSON：{exc}") from exc
     result = validate_model_result(payload, rules)
-    validate_model_result_matches_submission(result, submission)
+    validate_model_result_matches_submission(result, submission, require_identifiers=False)
     return result
 
 
@@ -368,10 +393,24 @@ def reserve_submission(
     try:
         connection.execute("BEGIN IMMEDIATE")
         existing = connection.execute(
-            "SELECT task_id FROM communication_tasks WHERE group_id = ? AND message_id = ?",
+            "SELECT task_id, status, order_id FROM communication_tasks WHERE group_id = ? AND message_id = ?",
             (message.group_id, message.message_id),
         ).fetchone()
         if existing:
+            if existing[1] == "generation_failed":
+                # A transient model/API failure must be retryable with the
+                # same inbound message, while successful submissions remain
+                # strictly idempotent.
+                connection.execute(
+                    "UPDATE communication_tasks SET status = 'submitted', error_message = NULL WHERE task_id = ?",
+                    (existing[0],),
+                )
+                connection.execute(
+                    "UPDATE work_order_status SET status = 'submitted', updated_at = ? WHERE business_type = ? AND order_id = ? AND submission_task_id = ?",
+                    (now, business_type, existing[2], existing[0]),
+                )
+                connection.commit()
+                return str(existing[0]), True
             connection.rollback()
             return str(existing[0]), False
 
@@ -389,10 +428,6 @@ def reserve_submission(
         if current and current[2] and normalize_identifier(current[2]) != normalize_identifier(submission.customer_number):
             connection.rollback()
             raise CommunicationError(f"工单 {submission.order_id} 的受理号码与功能一派单不一致，未登记回单")
-        if current and current[0] in {"submitted", "text_ready", "needs_revision", "replied"}:
-            connection.rollback()
-            raise CommunicationError(f"工单 {submission.order_id} 已提交回单")
-
         connection.execute(
             """
             INSERT INTO communication_tasks (
