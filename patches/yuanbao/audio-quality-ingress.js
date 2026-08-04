@@ -11,6 +11,7 @@ const PENDING_ROOT = path.join(PROJECT_ROOT, "audio-inbox", "pending-ingress");
 const PENDING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const AUDIO_SUFFIXES = new Set([".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".amr"]);
 const TIMEOUT_MS = 60_000;
+let workerProcess = null;
 
 function hasTrigger(text) { return TRIGGERS.some(item => String(text ?? "").includes(item)); }
 function isAddressed(ctx) { return ctx.isAtBot === true || /@[^\s]+/.test(String(ctx.rawBody ?? "")); }
@@ -74,6 +75,25 @@ function runIngress(event) {
         child.stdin.end(JSON.stringify(event));
     });
 }
+function ensureWorker(log) {
+    if (workerProcess && workerProcess.exitCode === null && !workerProcess.killed) return;
+    const child = spawn(PYTHON, ["-m", "audio_quality.worker", "--config", CONFIG, "--poll-seconds", "3"], {
+        cwd: PROJECT_ROOT,
+        windowsHide: true,
+        stdio: "ignore",
+        env: { ...process.env, PYTHONUTF8: "1" },
+    });
+    workerProcess = child;
+    child.on("error", error => {
+        if (workerProcess === child) workerProcess = null;
+        log.error("[audio-quality-ingress] worker start failed", { error: String(error) });
+    });
+    child.on("exit", (code, signal) => {
+        if (workerProcess === child) workerProcess = null;
+        if (code && code !== 0) log.warn("[audio-quality-ingress] worker exited", { code, signal });
+    });
+    log.info("[audio-quality-ingress] worker started", { pid: child.pid });
+}
 
 export const audioQualityIngress = {
     name: "audio-quality-ingress",
@@ -92,6 +112,7 @@ export const audioQualityIngress = {
             const result = await runIngress(event);
             reply = result.reply || "【听音质检】接收失败：入站适配器未返回结果。";
             if (result.ok) clearPending(ctx);
+            if (result.ok) ensureWorker(ctx.log);
             ctx.log.info("[audio-quality-ingress] handled", { messageId: event.message_id, taskId: result.task_id, created: result.created, ok: result.ok, mediaCount: pendingPaths.length });
         } catch (error) { ctx.log.error("[audio-quality-ingress] failed", { error: String(error) }); reply = `【听音质检】接收失败：${String(error)}`; }
         if (ctx.sender) { await ctx.sender.sendText(reply); ctx.statusSink?.({ lastOutboundAt: Date.now() }); }
