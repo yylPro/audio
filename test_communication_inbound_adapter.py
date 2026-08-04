@@ -116,6 +116,20 @@ class CommunicationInboundAdapterTests(unittest.TestCase):
             finally:
                 connection.close()
 
+    def test_missing_order_id_still_returns_standalone_dual_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = self.make_config(Path(directory))
+            config["communication"]["require_order_assignment_match"] = True
+            event = self.make_event(
+                text="@Bot #回单整理 我处于2026年4月24日11:05外呼客户未接，已短信。",
+            )
+            deepseek = ModelResult("未接通", "沟通内容：外呼客户未接，已短信。处理方案：继续跟进。客户态度：未接通。", [], [])
+            with patch("communication.inbound_adapter.generate_deepseek_result", return_value=deepseek):
+                result = handle_event(event, config)
+            self.assertTrue(result["ok"])
+            self.assertIn("工单号：未提供", result["reply"])
+            self.assertIn("仅整理回单，不影响工单催办状态", result["reply"])
+
     def test_assignment_match_links_current_reminder_order(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

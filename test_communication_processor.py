@@ -46,13 +46,11 @@ class CommunicationProcessorTests(unittest.TestCase):
         self.assertEqual("13800000000", parsed.customer_number)
         self.assertEqual("用户说明天下午可以联系", parsed.raw_content)
 
-    def test_parse_submission_requires_order_id(self):
-        with self.assertRaisesRegex(CommunicationError, "缺少工单号"):
-            parse_submission("@Bot #回单整理\n客户号码：13800000000\n口语描述：用户未接电话", RULES)
-
-    def test_parse_submission_requires_customer_number(self):
-        with self.assertRaisesRegex(CommunicationError, "缺少客户号码"):
-            parse_submission("@Bot #回单整理\n工单号：A1234\n口语描述：用户未接电话", RULES)
+    def test_parse_submission_allows_standalone_record_without_identifiers(self):
+        parsed = parse_submission("@Bot #回单整理\n我处于2026年4月24日11:05外呼客户未接，已短信。", RULES)
+        self.assertEqual("", parsed.order_id)
+        self.assertEqual("", parsed.customer_number)
+        self.assertIn("客户未接", parsed.raw_content)
 
     def test_parse_submission_infers_unlabeled_order_and_customer_number(self):
         parsed = parse_submission(

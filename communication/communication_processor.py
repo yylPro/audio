@@ -105,7 +105,7 @@ def extract_order_id(text: str, rules: dict[str, Any]) -> str:
     inferred = ORDER_ID_RE.search(text)
     if inferred:
         return normalize_text(inferred.group(0))
-    raise CommunicationError("消息缺少工单号，格式示例：工单号：202607240001")
+    return ""
 
 
 def extract_customer_number(text: str, order_id: str, rules: dict[str, Any]) -> str:
@@ -134,7 +134,7 @@ def extract_customer_number(text: str, order_id: str, rules: dict[str, Any]) -> 
     candidates = PHONE_RE.findall(text)
     if candidates:
         return normalize_identifier(candidates[0])
-    raise CommunicationError("消息缺少客户号码，格式示例：客户号码：13800000000")
+    return ""
 
 
 def parse_submission(text: str, rules: dict[str, Any]) -> ParsedSubmission:
@@ -143,12 +143,12 @@ def parse_submission(text: str, rules: dict[str, Any]) -> ParsedSubmission:
 
     order_id = extract_order_id(text, rules)
     pattern = str(rules.get("order_id_pattern", r"[A-Za-z0-9_-]{4,64}"))
-    if not re.fullmatch(pattern, order_id):
+    if order_id and not re.fullmatch(pattern, order_id):
         raise CommunicationError(f"工单号格式不合法：{order_id}")
 
     customer_number = extract_customer_number(text, order_id, rules)
     customer_pattern = str(rules.get("customer_number_pattern", r"[0-9A-Za-z*#]{5,32}"))
-    if not re.fullmatch(customer_pattern, customer_number):
+    if customer_number and not re.fullmatch(customer_pattern, customer_number):
         raise CommunicationError(f"客户号码格式不合法：{customer_number}")
 
     content_match = re.search(r"(?:口语描述|沟通情况|原始情况|回单内容)\s*[：:]\s*(.+)", text, re.DOTALL)
@@ -581,7 +581,7 @@ def format_dual_reply(order_id: str, python_result: ModelResult, deepseek_result
     return "\n".join(
         [
             "【回单整理】",
-            f"工单号：{order_id}",
+            f"工单号：{order_id or '未提供'}",
             "",
             "【Python标准版】",
             f"回单状态：{python_result.status}",
