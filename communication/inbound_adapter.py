@@ -107,6 +107,12 @@ def _failure_reply(order_id: str, python_result_text: str) -> str:
     )
 
 
+def _linkage_notice(assignment_matched: bool) -> str:
+    if assignment_matched:
+        return "【功能一联动】已匹配当前派单，回单结果将同步更新工单催办状态。"
+    return "【功能一联动】未匹配当前派单，仅整理回单，不影响工单催办状态。"
+
+
 def handle_event(event: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(event, dict):
         raise CommunicationError("入站事件必须是 JSON 对象")
@@ -144,7 +150,7 @@ def handle_event(event: dict[str, Any], config: dict[str, Any]) -> dict[str, Any
             (business_type, submission.order_id),
         ).fetchone()
         previously_replied = bool(previous and previous[0] in {"replied", "text_ready", "needs_revision"})
-        task_id, created = reserve_submission(
+        task_id, created, assignment_matched = reserve_submission(
             connection,
             message,
             submission,
@@ -191,12 +197,12 @@ def handle_event(event: dict[str, Any], config: dict[str, Any]) -> dict[str, Any
                 "created": True,
                 "task_id": task_id,
                 "generation_failed": True,
-                "reply": _failure_reply(submission.order_id, python_result.text),
+                "reply": _linkage_notice(assignment_matched) + "\n\n" + _failure_reply(submission.order_id, python_result.text),
             }
     finally:
         connection.close()
 
-    reply = format_dual_reply(submission.order_id, python_result, deepseek_result)
+    reply = _linkage_notice(assignment_matched) + "\n\n" + format_dual_reply(submission.order_id, python_result, deepseek_result)
     if previously_replied:
         reply = "【提示】该工单此前已经登记过回单，本次按最新消息重新整理。\n\n" + reply
     return {

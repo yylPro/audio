@@ -396,7 +396,7 @@ def reserve_submission(
     submission: ParsedSubmission,
     business_type: str = "default",
     require_assignment_match: bool = False,
-) -> tuple[str, bool]:
+) -> tuple[str, bool, bool]:
     task_id = str(uuid.uuid4())
     now = utc_now()
     try:
@@ -419,24 +419,18 @@ def reserve_submission(
                     (now, business_type, existing[2], existing[0]),
                 )
                 connection.commit()
-                return str(existing[0]), True
+                return str(existing[0]), True, bool(require_assignment_match)
             connection.rollback()
-            return str(existing[0]), False
+            return str(existing[0]), False, bool(require_assignment_match)
 
         current = connection.execute(
             "SELECT status, submission_task_id, customer_number, source_digest "
             "FROM work_order_status WHERE business_type = ? AND order_id = ?",
             (business_type, submission.order_id),
         ).fetchone()
-        if require_assignment_match and not current:
-            connection.rollback()
-            raise CommunicationError(f"工单 {submission.order_id} 不在功能一当前派单中，未登记回单")
-        if require_assignment_match and current and current[3] is None:
-            connection.rollback()
-            raise CommunicationError(f"工单 {submission.order_id} 尚未完成功能一派单同步，未登记回单")
+        assignment_matched = bool(current and current[3] is not None)
         if current and current[2] and normalize_identifier(current[2]) != normalize_identifier(submission.customer_number):
-            connection.rollback()
-            raise CommunicationError(f"工单 {submission.order_id} 的受理号码与功能一派单不一致，未登记回单")
+            assignment_matched = False
         connection.execute(
             """
             INSERT INTO communication_tasks (
@@ -456,28 +450,29 @@ def reserve_submission(
                 now,
             ),
         )
-        connection.execute(
-            """
-            INSERT INTO work_order_status (
-                business_type, order_id, customer_number, handler_user_id, status,
-                submitted_at, submission_task_id, updated_at
-            ) VALUES (?, ?, ?, ?, 'submitted', ?, ?, ?)
-            ON CONFLICT(business_type, order_id) DO UPDATE SET
-                customer_number = excluded.customer_number,
-                handler_user_id = excluded.handler_user_id,
-                status = 'submitted',
-                submitted_at = excluded.submitted_at,
-                submission_task_id = excluded.submission_task_id,
-                updated_at = excluded.updated_at
-            """,
-            (business_type, submission.order_id, submission.customer_number, message.sender_user_id, now, task_id, now),
-        )
+        if not require_assignment_match or assignment_matched:
+            connection.execute(
+                """
+                INSERT INTO work_order_status (
+                    business_type, order_id, customer_number, handler_user_id, status,
+                    submitted_at, submission_task_id, updated_at
+                ) VALUES (?, ?, ?, ?, 'submitted', ?, ?, ?)
+                ON CONFLICT(business_type, order_id) DO UPDATE SET
+                    customer_number = excluded.customer_number,
+                    handler_user_id = excluded.handler_user_id,
+                    status = 'submitted',
+                    submitted_at = excluded.submitted_at,
+                    submission_task_id = excluded.submission_task_id,
+                    updated_at = excluded.updated_at
+                """,
+                (business_type, submission.order_id, submission.customer_number, message.sender_user_id, now, task_id, now),
+            )
         connection.execute(
             "INSERT INTO communication_events (task_id, event_type, operator_user_id, event_data, created_at) VALUES (?, 'submitted', ?, ?, ?)",
             (task_id, message.sender_user_id, json.dumps(asdict(submission), ensure_ascii=False), now),
         )
         connection.commit()
-        return task_id, True
+        return task_id, True, assignment_matched
     except Exception:
         if connection.in_transaction:
             connection.rollback()
@@ -654,7 +649,7 @@ def main() -> int:
         submission = parse_submission(message.text, rules)
         connection = init_db(args.db.resolve())
         try:
-            task_id, created = reserve_submission(connection, message, submission, args.business_type)
+            task_id, created, _ = reserve_submission(connection, message, submission, args.business_type)
             if not created:
                 print(json.dumps({"task_id": task_id, "duplicate": True}, ensure_ascii=False))
                 return 0

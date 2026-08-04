@@ -119,8 +119,8 @@ class CommunicationProcessorTests(unittest.TestCase):
             submission = parse_submission(
                 "#回单整理 工单号：A1234 客户号码：13800000000 口语描述：已经联系到用户", RULES
             )
-            first_id, first_created = reserve_submission(connection, message, submission)
-            second_id, second_created = reserve_submission(connection, message, submission)
+            first_id, first_created, _ = reserve_submission(connection, message, submission)
+            second_id, second_created, _ = reserve_submission(connection, message, submission)
             self.assertTrue(first_created)
             self.assertFalse(second_created)
             self.assertEqual(first_id, second_id)
@@ -133,7 +133,7 @@ class CommunicationProcessorTests(unittest.TestCase):
             submission = parse_submission(
                 "#回单整理 工单号：A1234 客户号码：13800000000 口语描述：已经联系到用户", RULES
             )
-            task_id, _ = reserve_submission(connection, message, submission)
+            task_id, _, _ = reserve_submission(connection, message, submission)
             status, customer_number = connection.execute(
                 "SELECT status, customer_number FROM work_order_status WHERE order_id = 'A1234'"
             ).fetchone()
@@ -165,7 +165,7 @@ class CommunicationProcessorTests(unittest.TestCase):
             submission = parse_submission(
                 "#回单整理 工单号：A1234 客户号码：13800000000 口语描述：已经联系到用户", RULES
             )
-            task_id, _ = reserve_submission(connection, message, submission)
+            task_id, _, _ = reserve_submission(connection, message, submission)
             mark_generation_failed(connection, task_id, "模型输出无效", "u1")
             task_status = connection.execute(
                 "SELECT status FROM communication_tasks WHERE task_id = ?", (task_id,)

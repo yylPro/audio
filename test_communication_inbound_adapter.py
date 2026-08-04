@@ -93,12 +93,73 @@ class CommunicationInboundAdapterTests(unittest.TestCase):
                     self.make_config(Path(directory)),
                 )
 
-    def test_assignment_match_rejects_unassigned_order(self):
+    def test_assignment_match_keeps_unassigned_order_as_standalone_record(self):
         with tempfile.TemporaryDirectory() as directory:
-            config = self.make_config(Path(directory))
+            root = Path(directory)
+            config = self.make_config(root)
             config["communication"]["require_order_assignment_match"] = True
-            with self.assertRaisesRegex(ValueError, "不在功能一当前派单中"):
-                handle_event(self.make_event(), config)
+            deepseek = ModelResult("已联系", "沟通内容：已联系客户。处理方案：已记录。客户态度：客户知晓。", [], [])
+            with patch("communication.inbound_adapter.generate_deepseek_result", return_value=deepseek):
+                result = handle_event(self.make_event(), config)
+            self.assertTrue(result["ok"])
+            self.assertIn("未匹配当前派单，仅整理回单", result["reply"])
+
+            import sqlite3
+
+            connection = sqlite3.connect(root / "state.sqlite3")
+            try:
+                self.assertIsNone(
+                    connection.execute(
+                        "SELECT status FROM work_order_status WHERE order_id = 'A1234'"
+                    ).fetchone()
+                )
+            finally:
+                connection.close()
+
+    def test_assignment_match_links_current_reminder_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.make_config(root)
+            config["communication"]["require_order_assignment_match"] = True
+
+            import sqlite3
+
+            connection = sqlite3.connect(root / "state.sqlite3")
+            connection.execute(
+                """
+                CREATE TABLE work_order_status (
+                    business_type TEXT NOT NULL, order_id TEXT NOT NULL,
+                    customer_number TEXT, handler_user_id TEXT, status TEXT NOT NULL,
+                    submitted_at TEXT, submission_task_id TEXT, source_digest TEXT,
+                    updated_at TEXT NOT NULL, PRIMARY KEY (business_type, order_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO work_order_status (business_type, order_id, customer_number, status, source_digest, updated_at)
+                VALUES ('default', 'A1234', '13800000000', 'pending', 'excel-row-digest', 'now')
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            deepseek = ModelResult("已联系", "沟通内容：已联系客户。处理方案：已记录。客户态度：客户知晓。", [], [])
+            with patch("communication.inbound_adapter.generate_deepseek_result", return_value=deepseek):
+                result = handle_event(self.make_event(), config)
+            self.assertTrue(result["ok"])
+            self.assertIn("已匹配当前派单", result["reply"])
+
+            connection = sqlite3.connect(root / "state.sqlite3")
+            try:
+                self.assertEqual(
+                    "replied",
+                    connection.execute(
+                        "SELECT status FROM work_order_status WHERE order_id = 'A1234'"
+                    ).fetchone()[0],
+                )
+            finally:
+                connection.close()
 
     def test_generation_failure_does_not_mark_replied(self):
         with tempfile.TemporaryDirectory() as directory:
