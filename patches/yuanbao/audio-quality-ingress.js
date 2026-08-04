@@ -98,13 +98,19 @@ function ensureWorker(log) {
 export const audioQualityIngress = {
     name: "audio-quality-ingress",
     when: ctx => ctx.isGroup && ((hasTrigger(ctx.rawBody) && isAddressed(ctx)) || audioPaths(ctx).length > 0),
-    handler: async ctx => {
+    handler: async (ctx, next) => {
         const triggered = hasTrigger(ctx.rawBody) && isAddressed(ctx);
         // download-media may inject the previous message as auxiliary media.
         // Only ctx.medias belongs to the current message; never replace a
         // valid pending upload with a history path that will be cleaned up.
         const staged = Array.isArray(ctx.medias) && ctx.medias.length > 0 ? stageAudio(ctx) : [];
-        if (!triggered) { ctx.log.info("[audio-quality-ingress] audio staged", { count: staged.length }); return; }
+        if (!triggered) {
+            ctx.log.info("[audio-quality-ingress] audio staged", { count: staged.length });
+            // Auxiliary history media can reach this middleware with an unrelated
+            // text command. It must not prevent later feature ingresses from running.
+            await next();
+            return;
+        }
         const pendingPaths = staged.length ? staged : loadPending(ctx);
         const event = { message_id: ctx.raw.msg_id ?? String(ctx.raw.msg_seq ?? ""), group_id: ctx.groupCode ?? "", sender_user_id: ctx.fromAccount, sender_name: ctx.senderNickname ?? "", text: ctx.rawBody, is_at_bot: ctx.isAtBot === true, media_paths: pendingPaths, media_types: ctx.mediaTypes };
         let reply;
