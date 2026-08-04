@@ -57,7 +57,9 @@ def _validate_event(event: dict[str, Any], config: dict[str, Any]) -> tuple[list
         raise AudioQualityError("消息缺少音频附件")
     if len(media_paths) > maximum:
         raise AudioQualityError(f"每条听音检测消息最多可包含 {maximum} 个音频附件")
-    sources = [Path(repair_text(item)) for item in media_paths]
+    # Paths are already UTF-8 filesystem paths.  Do not run mojibake repair on
+    # them: a valid Chinese filename can be transformed into a nonexistent one.
+    sources = [Path(str(item)) for item in media_paths]
     if any(not source.is_file() for source in sources):
         raise AudioQualityError("元宝派临时音频不存在或已被清理")
     message_id = _normalize(event.get("message_id"))
