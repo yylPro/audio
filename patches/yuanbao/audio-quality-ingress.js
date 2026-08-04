@@ -13,7 +13,7 @@ const AUDIO_SUFFIXES = new Set([".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg",
 const TIMEOUT_MS = 60_000;
 
 function hasTrigger(text) { return TRIGGERS.some(item => String(text ?? "").includes(item)); }
-function isAddressed(ctx) { return ctx.isAtBot === true || /@[^\\s]+/.test(String(ctx.rawBody ?? "")); }
+function isAddressed(ctx) { return ctx.isAtBot === true || /@[^\s]+/.test(String(ctx.rawBody ?? "")); }
 function audioPaths(ctx) {
     return (ctx.mediaPaths ?? []).filter(item => AUDIO_SUFFIXES.has(path.extname(String(item)).toLowerCase()));
 }
@@ -80,7 +80,10 @@ export const audioQualityIngress = {
     when: ctx => ctx.isGroup && ((hasTrigger(ctx.rawBody) && isAddressed(ctx)) || audioPaths(ctx).length > 0),
     handler: async ctx => {
         const triggered = hasTrigger(ctx.rawBody) && isAddressed(ctx);
-        const staged = stageAudio(ctx);
+        // download-media may inject the previous message as auxiliary media.
+        // Only ctx.medias belongs to the current message; never replace a
+        // valid pending upload with a history path that will be cleaned up.
+        const staged = Array.isArray(ctx.medias) && ctx.medias.length > 0 ? stageAudio(ctx) : [];
         if (!triggered) { ctx.log.info("[audio-quality-ingress] audio staged", { count: staged.length }); return; }
         const pendingPaths = staged.length ? staged : loadPending(ctx);
         const event = { message_id: ctx.raw.msg_id ?? String(ctx.raw.msg_seq ?? ""), group_id: ctx.groupCode ?? "", sender_user_id: ctx.fromAccount, sender_name: ctx.senderNickname ?? "", text: ctx.rawBody, is_at_bot: ctx.isAtBot === true, media_paths: pendingPaths, media_types: ctx.mediaTypes };
