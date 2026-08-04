@@ -38,7 +38,10 @@ def _validate_event(event: dict[str, Any], config: dict[str, Any]) -> tuple[list
     if allowed and group_id not in allowed:
         raise AudioQualityError("当前群未启用听音质检")
     text = repair_multiline_text(event.get("text"))
+    # Keep canonical commands enabled even when an older config was saved with
+    # a legacy code-page conversion and its aliases became mojibake.
     triggers = [_normalize(item) for item in config.get("trigger_aliases", []) if _normalize(item)]
+    triggers.extend(["#听音检测", "#听音质检", "#录音质检"])
     if not any(trigger in text for trigger in triggers):
         raise AudioQualityError("消息缺少听音检测触发词")
     known = {item for item in ("#沟通记录", "#听音检测", "#听音质检", "#录音质检", "#工单催办") if item in text}
