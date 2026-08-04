@@ -337,10 +337,18 @@ def classify_file(path: Path, config: dict[str, Any]) -> str:
 
 def add_batch_labels(messages: list[str], title: str) -> list[str]:
     total = len(messages)
-    return [
-        f"【{title}{f' {index}/{total}' if total > 1 else ''}】\n\n{body}"
-        for index, body in enumerate(messages, start=1)
-    ]
+    labeled: list[str] = []
+    for index, body in enumerate(messages, start=1):
+        label = f"【{title}{f' {index}/{total}' if total > 1 else ''}】"
+        # Yuanbao can render only the first text element when a message starts
+        # with plain text followed by a native @ custom element. Put the first
+        # native mention first so the remaining title/body stays visible.
+        match = re.match(r"^(@\S+)(\s+)(.*)$", body, flags=re.DOTALL)
+        if match:
+            labeled.append(f"{body}\n\n{label}")
+        else:
+            labeled.append(f"{label}\n\n{body}")
+    return labeled
 
 
 def build_overdue_messages(

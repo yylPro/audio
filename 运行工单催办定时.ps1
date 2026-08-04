@@ -21,7 +21,9 @@ function Invoke-ReminderOnce {
     $startedAt = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "[$startedAt] 定时工单催办启动"
 
-    & $pythonPath $scriptPath --config $configPath --send --keep *>> $logPath
+    # Scheduled reminders are periodic notifications; resend unchanged files
+    # on each scheduled run instead of treating the first delivery as final.
+    & $pythonPath $scriptPath --config $configPath --send --force-resend --keep *>> $logPath
     $exitCode = $LASTEXITCODE
 
     $finishedAt = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
