@@ -88,6 +88,28 @@ def _resolve_path(config: dict[str, Any], communication: dict[str, Any], key: st
     return Path(value) if value else default
 
 
+def _resolve_config_paths(config: dict[str, Any], base_dir: Path) -> dict[str, Any]:
+    """Resolve project-relative communication paths independently of cwd."""
+    path_keys = {
+        "processor", "rules", "prompt", "env_file", "state_db", "member_mapping_file",
+    }
+    normalized = dict(config)
+    paths = dict(normalized.get("paths", {}))
+    communication = dict(normalized.get("communication", {}))
+    delivery = dict(normalized.get("delivery", {}))
+    for section, values, keys in (("paths", paths, {"inbox", "archive", "failed", "state_db"}),
+                                  ("communication", communication, {"processor", "rules", "prompt", "env_file"}),
+                                  ("delivery", delivery, {"member_mapping_file"})):
+        for key in keys & path_keys:
+            value = values.get(key)
+            if value and not Path(str(value)).is_absolute():
+                values[key] = str((base_dir / str(value)).resolve())
+    normalized["paths"] = paths
+    normalized["communication"] = communication
+    normalized["delivery"] = delivery
+    return normalized
+
+
 def _model_name(communication: dict[str, Any]) -> str:
     configured = normalize_text(communication.get("model") or "deepseek-chat")
     return configured.rsplit("/", 1)[-1]
@@ -221,7 +243,8 @@ def main() -> int:
     args = parser.parse_args()
     try:
         event = json.load(sys.stdin)
-        result = handle_event(event, load_json(args.config.resolve()))
+        config_path = args.config.resolve()
+        result = handle_event(event, _resolve_config_paths(load_json(config_path), config_path.parent))
     except Exception as exc:
         result = {
             "handled": True,

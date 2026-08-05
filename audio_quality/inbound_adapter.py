@@ -170,7 +170,14 @@ def main() -> int:
         event = json.load(sys.stdin)
         if not isinstance(event, dict):
             raise AudioQualityError("入站事件必须是 JSON 对象")
-        result = ingest_event(event, load_json(args.config))
+        config_path = args.config.resolve()
+        config = load_json(config_path)
+        base_dir = config_path.parent
+        for key in ("database_path", "audio_inbox"):
+            value = config.get(key)
+            if value and not Path(str(value)).is_absolute():
+                config[key] = str((base_dir / str(value)).resolve())
+        result = ingest_event(event, config)
     except Exception as exc:
         result = {"handled": True, "ok": False, "reply": f"【听音质检】接收失败：{exc}"}
     print(json.dumps(result, ensure_ascii=False))

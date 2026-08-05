@@ -20,10 +20,10 @@
     }
   },
   "paths": {
-    "inbox": "D:\\代维\\工单提醒\\inbox",
-    "archive": "D:\\代维\\工单提醒\\archive",
-    "failed": "D:\\代维\\工单提醒\\failed",
-    "state_db": "D:\\代维\\工单提醒\\state\\assistant.sqlite3"
+    "inbox": "inbox",
+    "archive": "archive",
+    "failed": "failed",
+    "state_db": "state/assistant.sqlite3"
   },
   "excel": {
     "sheet": null,
@@ -62,7 +62,7 @@
   },
   "delivery": {
     "enabled": false,
-    "openclaw_cmd": "D:\\OpenClaw\\openclaw.cmd",
+    "openclaw_cmd": "openclaw.cmd",
     "method": "direct",
     "fallback_to_cron": true,
     "direct_timeout_seconds": 60,
@@ -77,14 +77,14 @@
     "gateway_ready_poll_seconds": 2,
     "gateway_ready_markers": ["Connectivity probe: ok", "Listening:"],
     "allow_undelivered_status": false,
-    "member_mapping_file": "D:\\代维\\工单提醒\\yuanbao_members.json"
+    "member_mapping_file": "yuanbao_members.json"
   },
   "communication": {
     "enabled": true,
-    "processor": "D:\\代维\\工单提醒\\communication\\communication_processor.py",
-    "rules": "D:\\代维\\工单提醒\\communication\\communication_rules.json",
-    "prompt": "D:\\代维\\工单提醒\\communication\\prompts\\communication_record.md",
-    "env_file": "D:\\代维\\工单提醒\\audio_quality.env",
+    "processor": "communication/communication_processor.py",
+    "rules": "communication/communication_rules.json",
+    "prompt": "communication/prompts/communication_record.md",
+    "env_file": "audio_quality.env",
     "model": "deepseek/deepseek-chat",
     "history_messages": 0,
     "business_type": "default",

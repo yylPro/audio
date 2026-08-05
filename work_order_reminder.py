@@ -701,7 +701,12 @@ def replied_work_order_keys(
     source_digest: str | None = None,
 ) -> set[str]:
     order_ids = {normalize_identifier(row.ticket) for row in work_orders if normalize_identifier(row.ticket)}
-    if not order_ids:
+    customer_numbers = {
+        normalize_identifier(row.acceptance_number)
+        for row in work_orders
+        if normalize_identifier(row.acceptance_number)
+    }
+    if not order_ids and not customer_numbers:
         return set()
     communication = config.get("communication", {}) if isinstance(config.get("communication"), dict) else {}
     business_type = normalize_text(communication.get("business_type", "default")) or "default"
@@ -716,15 +721,16 @@ def replied_work_order_keys(
     params: tuple[Any, ...] = (*sorted(statuses),)
     rows = connection.execute(
         f"""
-        SELECT order_id FROM work_order_status
+        SELECT order_id, customer_number FROM work_order_status
         WHERE status IN ({placeholders}){source_clause}
         """,
         params,
     ).fetchall()
     replied_orders: set[str] = set()
-    for (order_id,) in rows:
+    for order_id, customer_number in rows:
         normalized_order_id = normalize_identifier(order_id)
-        if normalized_order_id in order_ids:
+        normalized_customer_number = normalize_identifier(customer_number)
+        if normalized_order_id in order_ids or normalized_customer_number in customer_numbers:
             replied_orders.add(normalized_order_id)
     return replied_orders
 
@@ -736,12 +742,31 @@ def filter_replied_work_orders(
     source_digest: str | None = None,
 ) -> list[WorkOrderRow]:
     replied_orders = replied_work_order_keys(connection, work_orders, config, source_digest)
+    communication = config.get("communication", {}) if isinstance(config.get("communication"), dict) else {}
+    statuses = {
+        normalize_text(item)
+        for item in communication.get("reminder_block_statuses", sorted(REPLIED_WORK_ORDER_STATUSES))
+        if normalize_text(item)
+    } or REPLIED_WORK_ORDER_STATUSES
+    placeholders = ",".join("?" for _ in statuses)
+    replied_customer_numbers = {
+        normalize_identifier(number)
+        for (number,) in connection.execute(
+            f"SELECT customer_number FROM work_order_status WHERE status IN ({placeholders})",
+            tuple(sorted(statuses)),
+        ).fetchall()
+        if normalize_identifier(number)
+    }
     if not replied_orders:
-        return work_orders
+        return [row for row in work_orders if normalize_identifier(row.acceptance_number) not in replied_customer_numbers]
     return [
         row
         for row in work_orders
-        if normalize_identifier(row.ticket) not in replied_orders
+        if (
+            normalize_identifier(row.ticket) not in replied_orders
+            if normalize_identifier(row.ticket)
+            else normalize_identifier(row.acceptance_number) not in replied_customer_numbers
+        )
     ]
 
 

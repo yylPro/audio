@@ -242,17 +242,49 @@ def run_one(connection: sqlite3.Connection, provider: ASRProvider, worker_id: st
                 if recording_day:
                     from datetime import datetime
                     report_when = datetime.strptime(recording_day, "%Y-%m-%d")
-            report_path = export_daily_report(connection, output_root, report_when, quality_rules) if output_root is not None else None
+            report_path = None
+            if output_root is not None:
+                for export_attempt, retry_delay in enumerate((0, 2, 10), start=1):
+                    try:
+                        report_path = export_daily_report(connection, output_root, report_when, quality_rules)
+                        break
+                    except Exception as exc:
+                        if print_traceback:
+                            traceback.print_exc()
+                        if export_attempt == 3:
+                            add_event(connection, task_id, "report_export_pending", {
+                                "report_type": "daily",
+                                "attempts": export_attempt,
+                                "error": str(exc)[:1000],
+                            })
+                            connection.commit()
+                        elif retry_delay:
+                            time.sleep(retry_delay)
             if debug and report_path:
                 print(f"worker: report written -> {report_path}")
             comparison_path = None
             if output_root is not None and should_run_deepseek and recording_day:
-                comparison_paths = export_deepseek_comparison(
-                    connection, output_root, {recording_day}, quality_rules
-                )
-                comparison_path = comparison_paths[0] if comparison_paths else None
-                if debug and comparison_path:
-                    print(f"worker: comparison report written -> {comparison_path}")
+                for export_attempt, retry_delay in enumerate((0, 2, 10), start=1):
+                    try:
+                        comparison_paths = export_deepseek_comparison(
+                            connection, output_root, {recording_day}, quality_rules
+                        )
+                        comparison_path = comparison_paths[0] if comparison_paths else None
+                        if debug and comparison_path:
+                            print(f"worker: comparison report written -> {comparison_path}")
+                        break
+                    except Exception as exc:
+                        if print_traceback:
+                            traceback.print_exc()
+                        if export_attempt == 3:
+                            add_event(connection, task_id, "report_export_pending", {
+                                "report_type": "deepseek_comparison",
+                                "attempts": export_attempt,
+                                "error": str(exc)[:1000],
+                            })
+                            connection.commit()
+                        elif retry_delay:
+                            time.sleep(retry_delay)
             connection.execute("UPDATE audio_tasks SET asr_provider=? WHERE task_id=?", (str(asr_config.get("provider", "aliyun_fun_asr")), task_id))
             reply = format_completed_reply(task_id, result.needs_human_review)
             notify_job_id = None
@@ -298,7 +330,22 @@ def main() -> int:
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--traceback", action="store_true", dest="print_traceback")
     args = parser.parse_args()
-    config = load_json(args.config)
+    config_path = args.config.resolve()
+    config = load_json(config_path)
+    base_dir = config_path.parent
+    path_keys = ("database_path", "audio_inbox", "output_root", "quality_rules_path", "env_file")
+    for key in path_keys:
+        value = config.get(key)
+        if value and not Path(str(value)).is_absolute():
+            config[key] = str((base_dir / str(value)).resolve())
+    for section, keys in (("audio_conversion", ("ffmpeg_path", "work_dir")),
+                          ("completion_notify", ("openclaw_cmd",))):
+        values = config.get(section)
+        if isinstance(values, dict):
+            for key in keys:
+                value = values.get(key)
+                if value and not Path(str(value)).is_absolute():
+                    values[key] = str((base_dir / str(value)).resolve())
     load_env_file(Path(config["env_file"]) if config.get("env_file") else None)
     asr_config = config.get("asr", {})
     worker_config = config.get("worker", {}) if isinstance(config.get("worker", {}), dict) else {}

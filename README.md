@@ -4,7 +4,7 @@
 
 1. **功能一：Excel工单催办**：已经实现。读取业务 Excel、排除完成状态、按当前处理人生成原生 `@` 催办消息。
 2. **功能二：回单整理**：入口已接入。群内原生 `@Bot #回单整理 ...` 会调用本地处理器，生成 Python 标准版和 DeepSeek 智能版；DeepSeek 校验成功后写入 `replied`。
-3. **功能三：录音转写与质检**：已经初步可用，当前主链路是阿里 FunASR + DeepSeek；独立说明见 `audio_quality/README.md`。
+3. **功能三：录音转写与质检**：已经初步可用，当前主链路是阿里 FunASR + DeepSeek；独立说明见 `audio_quality/README.md`。质检结果、日报和 DeepSeek 对比报表分别处理，报表导出失败不会丢失已完成的质检结果。
 
 ## 统一启动入口
 
@@ -22,7 +22,7 @@
 
 完整部署状态和验收命令见 `THREE_CHANNELS.md`，永久规则见 `AGENT_RULES_WORK_ORDER.md`。
 
-功能一保留两种运行路径：直接双击 `运行工单催办.cmd` 可随时预览或发送；运行 `install_scheduled_reminders.ps1` 可安装每 5 分钟扫描一次的后台定时任务。两者共用运行锁，撞车时后启动的一方会跳过本轮，不会并发重复发送。手动发送会强制把本轮文件全部发出；后台定时才会跳过已经送达过的同一批消息。
+功能一保留两种运行路径：直接双击 `运行工单催办.cmd` 可随时预览或发送；运行 `install_scheduled_reminders.ps1` 可安装每 5 分钟扫描一次的后台定时任务。两者共用运行锁，撞车时后启动的一方会跳过本轮，不会并发处理。手动发送和当前定时脚本都可使用强制重发参数；定时任务实际以 `运行工单催办定时.ps1` 的参数为准，不应把文档中的送达记录描述理解为绝对去重保证。
 
 Excel 数据不会发送给模型。只有 Python 已经生成的最终催办文本会交给指定模型原样转发。
 
@@ -48,7 +48,7 @@ Excel 数据不会发送给模型。只有 Python 已经生成的最终催办文
 
 1. 将 `config.example.json` 复制为 `config.json`。
 2. 修改目录、元宝群目标和 DeepSeek 模型名。
-3. Python 需要 `openpyxl` 才能读取 `.xlsx`；标准库即可读取 `.csv`。
+3. Python 需要 `openpyxl` 才能读取 `.xlsx`；标准库即可读取 `.csv`。本机共享依赖安装在 `D:\PythonPackages` 时，可先设置 `$env:PYTHONPATH='D:\PythonPackages'`，供多个项目复用。
 4. 将待处理文件放入配置中的 `inbox` 目录。
 
 ## 预览（不会发送）
@@ -131,3 +131,12 @@ python work_order_reminder.py --config config.json --send
 ```
 
 定时任务运行日志位于 `state\logs\work_order_reminder_scheduled.log`。手动和定时任务可以同时保留，但不会同时处理同一批 `inbox` 文件；定时任务默认保留源文件，只用送达记录防重复。
+
+## 录音质检报表与评分来源
+
+- `audio_quality_config.json` 中的 `quality.deepseek_mode` 默认为 `parallel_compare`。
+- `parallel_compare` 会同时保留 Python 规则评分和 DeepSeek 语义评分：正式日报默认使用 Python 规则评分，单独生成 `YYYY-MM-DD_降挽质检方案对比-语义评分.xlsx` 作为对比表。
+- 正式日报新增“评分来源”列，标明当前行使用的是 `Python规则质检` 还是 `DeepSeek语义审核`。
+- 录音文件名支持完整日期（如 `20260708`、`2026-07-08`）以及 `7月8日`、`7月8号` 格式。无法识别日期时仍可完成质检，但不会按日期生成对比表。
+- 日报或对比表导出失败时，系统只重试报表导出（最多 3 次，间隔 0 秒、2 秒、10 秒），不会重复 ASR 或 DeepSeek 分析；仍失败会记录 `report_export_pending` 事件。当前不会自动建立后台补导出队列，需要根据事件或任务管理命令人工补导出。
+- 对比表只有在 `deepseek_scoring.enabled=true`、模式为 `parallel_compare`（或其他对比模式）、DeepSeek 评分成功且文件名能解析出录音日期时才会生成；没有可识别日期的文件仍可完成质检，但不会生成按日期筛选的对比表。

@@ -143,6 +143,12 @@ def extract_recording_date(*values: str) -> str | None:
             return datetime(year, month, day).strftime("%Y-%m-%d")
         except ValueError:
             continue
+    month_day = re.search(r"(\d{1,2})\s*月\s*(\d{1,2})\s*(?:日|号)?", joined)
+    if month_day:
+        try:
+            return datetime(datetime.now().year, int(month_day.group(1)), int(month_day.group(2))).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
     return None
 
 
@@ -1295,6 +1301,7 @@ def export_report(connection: sqlite3.Connection, output: Path, report_day: str 
         "是否有挽留动作",
         "挽留场景存在问题",
         "其他存在问题",
+        "评分来源",
         "质检得分",
         "销降离原因",
         "挽留结果",
@@ -1375,6 +1382,7 @@ def export_report(connection: sqlite3.Connection, output: Path, report_day: str 
             "否" if "missing_retention_action" in rule_ids else "是",
             scene_problem,
             other_problem,
+            "DeepSeek语义审核" if use_deepseek_actions else "Python规则质检",
             score if score is not None else "",
             service_reason,
             retention_result or "",
